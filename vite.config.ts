@@ -13,6 +13,18 @@ export default defineConfig(({ mode }) => {
       electron({
         main: {
           entry: 'electron/main.ts',
+          vite: {
+            build: {
+              rollupOptions: {
+                external: ['better-sqlite3']
+              }
+            },
+            define: {
+              'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+              'process.env.GOOGLE_CLIENT_ID': JSON.stringify(env.GOOGLE_CLIENT_ID),
+              'process.env.GOOGLE_CLIENT_SECRET': JSON.stringify(env.GOOGLE_CLIENT_SECRET),
+            }
+          }
         },
         preload: {
           input: 'electron/preload.ts',

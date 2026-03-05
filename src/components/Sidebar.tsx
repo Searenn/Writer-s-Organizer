@@ -116,7 +116,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="w-8 h-8 bg-emerald-500/20 rounded-lg flex items-center justify-center">
           <Library className="w-5 h-5 text-emerald-400" />
         </div>
-        <span className="tracking-tight">Writer's Hub</span>
+        <span className="tracking-tight">Pisaka</span>
       </div>
 
       <div className="flex-1 overflow-y-auto py-2 flex flex-col gap-4">

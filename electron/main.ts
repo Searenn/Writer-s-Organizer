@@ -38,7 +38,9 @@ function createWindow() {
       nodeIntegration: false,
       webSecurity: false,
     },
-    icon: path.join(__dirname, '../public/icon.ico'),
+    icon: fs.existsSync(path.join(__dirname, '../public/icon.ico'))
+      ? path.join(__dirname, '../public/icon.ico')
+      : path.join(__dirname, '../dist/icon.ico'),
     frame: false,
     titleBarStyle: 'hidden',
   });
