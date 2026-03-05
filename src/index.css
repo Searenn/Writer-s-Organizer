@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #09090b;
+    /* zinc-950 */
+    color: #f4f4f5;
+    /* zinc-100 */
+  }
+
+  /* Dark scrollbars */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #3f3f46;
+    /* zinc-700 */
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #52525b;
+    /* zinc-600 */
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* Dark range/slider inputs */
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+    height: 4px;
+  }
+
+  input[type="range"]::-webkit-slider-track {
+    background: #27272a;
+    /* zinc-800 */
+    border-radius: 2px;
+    height: 4px;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #10b981;
+    /* emerald-500 */
+    border: 2px solid #09090b;
+    margin-top: -5px;
+  }
+
+  /* Dark checkboxes */
+  input[type="checkbox"] {
+    accent-color: #10b981;
+  }
+
+  /* Dark select/option styling */
+  select {
+    color-scheme: dark;
+  }
+
+  option {
+    background-color: #18181b;
+    /* zinc-900 */
+    color: #f4f4f5;
+    /* zinc-100 */
+  }
+
+  /* Search Highlights */
+  ::highlight(search-match) {
+    background-color: rgba(16, 185, 129, 0.4);
+    color: #ffffff;
+  }
+
+  ::highlight(search-active) {
+    background-color: #10b981;
+    color: #09090b;
+  }
+}
