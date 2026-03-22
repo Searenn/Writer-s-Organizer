@@ -38,7 +38,7 @@ export const CalendarView: React.FC<{ onSelectBook: (id: string) => void }> = ({
     for (let i = 0; i < 7; i++) {
       formattedDate = format(day, dateFormat);
       const cloneDay = day;
-      
+
       // Find chapters scheduled for this day
       const dayChapters = state.chapters.filter((c) => {
         if (!c.scheduledDate) return false;
@@ -53,8 +53,8 @@ export const CalendarView: React.FC<{ onSelectBook: (id: string) => void }> = ({
             !isSameMonth(day, monthStart)
               ? 'bg-zinc-950/50 text-zinc-500'
               : isSameDay(day, new Date())
-              ? 'bg-emerald-50/30 text-emerald-900 font-semibold'
-              : 'bg-zinc-900 text-zinc-200 hover:bg-zinc-950'
+                ? 'bg-emerald-50/30 text-emerald-900 font-semibold'
+                : 'bg-zinc-900 text-zinc-200 hover:bg-zinc-950'
           )}
         >
           <div className="flex justify-end mb-2">
@@ -66,44 +66,41 @@ export const CalendarView: React.FC<{ onSelectBook: (id: string) => void }> = ({
             {dayChapters.map((chapter) => {
               const book = state.books.find((b) => b.id === chapter.bookId);
               if (!book) return null;
-              
+
+              const account = state.accounts.find((a) => a.id === book.accountId);
+              const color = account?.color || book.color || '#10b981';
+
               return (
                 <div
                   key={chapter.id}
                   className={cn(
-                    'text-xs p-1.5 rounded-md border flex flex-col gap-1 cursor-pointer group transition-all',
+                    'text-[10px] p-1 px-1.5 rounded flex items-center justify-between gap-1.5 cursor-pointer group transition-all min-w-0 border',
                     chapter.isPublished
-                      ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                      : 'bg-zinc-900 border-zinc-800 text-zinc-300 shadow-sm hover:border-emerald-300'
+                      ? 'bg-zinc-800/30 border-zinc-800/50 text-zinc-500 opacity-60'
+                      : 'shadow-sm opacity-90 hover:opacity-100'
                   )}
+                  style={!chapter.isPublished ? { backgroundColor: `${color}15`, color: color, borderColor: `${color}40` } : undefined}
+                  title={`${book.title} — ${chapter.title}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     // Toggle published status on click
                     updateChapter(chapter.id, { isPublished: !chapter.isPublished });
                   }}
                 >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 truncate">
-                      <div
-                        className="w-2 h-2 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: book.color }}
-                      />
-                      <span className="font-medium truncate">{book.title}</span>
-                    </div>
+                  <div className="flex items-center gap-1.5 truncate flex-1 min-w-0">
                     {chapter.isPublished ? (
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                      <CheckCircle2 className="w-3 h-3 flex-shrink-0 text-emerald-500" />
                     ) : (
-                      <Clock className="w-3.5 h-3.5 text-zinc-500 flex-shrink-0 group-hover:text-emerald-500" />
+                      <Clock className="w-3 h-3 flex-shrink-0 opacity-70 group-hover:opacity-100" />
                     )}
+                    <span className="font-semibold truncate flex-shrink-0 max-w-[45%]">{book.title}</span>
+                    <span className="truncate opacity-80 min-w-0">{chapter.title}</span>
                   </div>
-                  <div className="flex items-center justify-between text-[10px] opacity-80">
-                    <span className="truncate">{chapter.title}</span>
-                    {chapter.hasPromo && (
-                      <span className="bg-amber-100 text-amber-800 px-1 rounded text-[9px] font-bold">
-                        ПРОМО
-                      </span>
-                    )}
-                  </div>
+                  {chapter.hasPromo && (
+                    <span className="bg-amber-100/90 text-amber-800 px-1 py-[1px] rounded-[3px] text-[8px] font-bold flex-shrink-0 leading-none">
+                      ПРОМО
+                    </span>
+                  )}
                 </div>
               );
             })}

@@ -1,11 +1,13 @@
-import { Book, Calendar, CheckCircle2, Home, Library, Loader2, Megaphone, Plus, Search, Settings, TrendingUp, X } from 'lucide-react';
+import { Book, Calendar, CheckCircle2, Edit2, Home, Key, Library, Loader2, Megaphone, Plus, Search, Settings, Trash2, TrendingUp, X } from 'lucide-react';
 import React, { useMemo, useState } from 'react';
 import { useAppStore } from '../store';
 import { cn, stripHtml } from '../utils';
+import { NotificationsWidget } from './NotificationsWidget';
 
 type SidebarProps = {
   currentView: string;
   setCurrentView: (view: string) => void;
+  selectedBookId: string | null;
   setSelectedBookId: (id: string | null) => void;
   onSelectBook: (id: string, tab?: string) => void;
 };
@@ -17,11 +19,40 @@ export const Sidebar: React.FC<SidebarProps> = ({
   setSelectedBookId,
   onSelectBook,
 }) => {
-  const { state, updateBook, updateGoogleTokens, clearGoogleTokens } = useAppStore();
+  const { state, updateBook, updateAccount, deleteAccount, reorderAccounts, updateGoogleTokens, clearGoogleTokens } = useAppStore();
+  const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
+  const [editAccountName, setEditAccountName] = useState('');
   const [googleConnecting, setGoogleConnecting] = useState(false);
   const [googleError, setGoogleError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const hasGoogleTokens = !!state.googleTokens;
+
+  const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+
+  const handleDragStart = (e: React.DragEvent, idx: number) => {
+    setDraggedIdx(idx);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    setDragOverIdx(idx);
+  };
+
+  const handleDrop = (e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    if (draggedIdx !== null && draggedIdx !== idx) {
+      reorderAccounts(draggedIdx, idx);
+    }
+    setDraggedIdx(null);
+    setDragOverIdx(null);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedIdx(null);
+    setDragOverIdx(null);
+  };
 
   const searchResults = useMemo(() => {
     if (!searchQuery.trim() || searchQuery.length < 2) return [];
@@ -43,14 +74,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (char.name.toLowerCase().includes(query) ||
         char.description.toLowerCase().includes(query) ||
         (char.aliases && char.aliases.toLowerCase().includes(query))) {
-        results.push({ type: 'character', id: char.bookId, title: char.name, subTitle: `Персонаж в "${state.books.find(b => b.id === char.bookId)?.title}"`, tab: 'characters' });
+        results.push({ type: 'character', id: char.bookId, title: char.name, subTitle: `Персонаж в "${state.books.find(b => b.id === char.bookId)?.title}"`, tab: 'info' });
       }
     });
 
     // Search Settings
     state.settings.forEach(set => {
       if (set.title.toLowerCase().includes(query) || set.description.toLowerCase().includes(query)) {
-        results.push({ type: 'setting', id: set.bookId, title: set.title, subTitle: `Сеттинг в "${state.books.find(b => b.id === set.bookId)?.title}"`, tab: 'settings' });
+        results.push({ type: 'setting', id: set.bookId, title: set.title, subTitle: `Сеттинг в "${state.books.find(b => b.id === set.bookId)?.title}"`, tab: 'info' });
       }
     });
 
@@ -86,11 +117,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setSelectedBookId(null);
   };
 
+  const handleStartEditAccount = (id: string, name: string) => {
+    setEditingAccountId(id);
+    setEditAccountName(name);
+  };
+
+  const handleSaveAccount = () => {
+    if (editingAccountId && editAccountName.trim()) {
+      updateAccount(editingAccountId, editAccountName.trim());
+    }
+    setEditingAccountId(null);
+  };
+
+  const handleDeleteAccount = (id: string, name: string) => {
+    if (window.confirm(`Вы уверены, что хотите удалить аккаунт "${name}" и все его книги?`)) {
+      deleteAccount(id);
+    }
+  };
+
   const handleGoogleConnect = async () => {
     setGoogleConnecting(true);
     setGoogleError(null);
     try {
-      const result = await window.electron.googleAuthStart();
+      const result = await (window as any).electron.googleAuthStart();
       if (result.success && result.tokens) {
         updateGoogleTokens(result.tokens);
       } else {
@@ -105,13 +154,41 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const handleGoogleDisconnect = async () => {
     if (state.googleTokens) {
-      await window.electron.googleRevoke(state.googleTokens);
+      await (window as any).electron.googleRevoke(state.googleTokens);
     }
     clearGoogleTokens();
   };
 
+  const [exportingAll, setExportingAll] = useState(false);
+  const [exportAllUrl, setExportAllUrl] = useState<string | null>(null);
+
+  const handleExportAll = async () => {
+    if (!state.googleTokens) return;
+    setExportingAll(true);
+    setGoogleError(null);
+    try {
+      const result = await (window as any).electron.googleExportAll({
+        state,
+        tokens: state.googleTokens
+      });
+      if (result.success && result.docUrl) {
+        setExportAllUrl(result.docUrl);
+        if (result.updatedTokens) {
+          updateGoogleTokens(result.updatedTokens);
+        }
+      } else {
+        setGoogleError(result.error || 'Ошибка экспорта');
+      }
+    } catch (err: any) {
+      setGoogleError(err.message);
+    } finally {
+      setExportingAll(false);
+    }
+  };
+
   return (
-    <div className="w-64 bg-zinc-950 text-zinc-400 flex flex-col h-full border-r border-zinc-900">
+    <div className="w-64 bg-zinc-950 border-r border-zinc-900 flex flex-col h-full overflow-hidden shrink-0">
+      {/* Search Bar section */}
       <div className="p-6 flex items-center gap-3 text-white font-bold text-xl">
         <div className="w-8 h-8 bg-emerald-500/20 rounded-lg flex items-center justify-center">
           <Library className="w-5 h-5 text-emerald-400" />
@@ -179,6 +256,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
         </div>
 
+        <NotificationsWidget />
+
         <div className="px-3 space-y-1">
           <button
             onClick={() => handleNav('dashboard')}
@@ -205,16 +284,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
             Промпты
           </button>
           <button
-            onClick={() => handleNav('adblocks')}
+            onClick={() => handleNav('credentials')}
             className={cn(
               'w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
-              currentView === 'adblocks'
+              currentView === 'credentials'
                 ? 'bg-emerald-500/10 text-emerald-400'
                 : 'hover:bg-zinc-800 hover:text-white'
             )}
           >
-            <Megaphone className="w-4 h-4" />
-            Рекламные блоки
+            <Key className="w-4 h-4" />
+            Доступы
           </button>
           <button
             onClick={() => handleNav('calendar')}
@@ -247,12 +326,62 @@ export const Sidebar: React.FC<SidebarProps> = ({
             Мои Книги
           </div>
           <div className="space-y-4">
-            {state.accounts.map((account) => {
+            {state.accounts.map((account, idx) => {
               const accountBooks = state.books.filter((b) => b.accountId === account.id);
               return (
-                <div key={account.id} className="space-y-1">
-                  <div className="text-xs font-medium text-zinc-500 px-3 py-1">
-                    {account.name}
+                <div
+                  key={account.id}
+                  className={cn(
+                    "space-y-1 group/acc border-2 border-transparent transition-all rounded-lg",
+                    dragOverIdx === idx && draggedIdx !== null && dragOverIdx !== draggedIdx
+                      ? dragOverIdx > draggedIdx ? "border-b-emerald-500 pb-2" : "border-t-emerald-500 pt-2"
+                      : "",
+                    draggedIdx === idx ? "opacity-30 border-dashed border-zinc-700" : ""
+                  )}
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, idx)}
+                  onDragOver={(e) => handleDragOver(e, idx)}
+                  onDragLeave={() => setDragOverIdx(null)}
+                  onDrop={(e) => handleDrop(e, idx)}
+                  onDragEnd={handleDragEnd}
+                >
+                  <div className="flex items-center justify-between px-3 py-1">
+                    {editingAccountId === account.id ? (
+                      <input
+                        autoFocus
+                        value={editAccountName}
+                        onChange={(e) => setEditAccountName(e.target.value)}
+                        onBlur={handleSaveAccount}
+                        onKeyDown={(e) => e.key === 'Enter' && handleSaveAccount()}
+                        className="bg-zinc-900 text-[10px] font-semibold text-zinc-100 uppercase tracking-wider px-1 py-0.5 rounded border border-emerald-500/50 outline-none w-full"
+                      />
+                    ) : (
+                      <>
+                        <div
+                          className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider truncate cursor-pointer hover:text-zinc-200 transition-colors flex-1"
+                          onDoubleClick={() => handleStartEditAccount(account.id, account.name)}
+                          title={account.name}
+                        >
+                          {account.name.includes(':') ? account.name.split(':')[0].trim() : account.name}
+                        </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover/acc:opacity-100 transition-opacity">
+                          <button
+                            onClick={() => handleStartEditAccount(account.id, account.name)}
+                            className="p-1 text-zinc-600 hover:text-emerald-400"
+                            title="Переименовать"
+                          >
+                            <Edit2 className="w-3 h-3" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteAccount(account.id, account.name)}
+                            className="p-1 text-zinc-600 hover:text-red-400"
+                            title="Удалить аккаунт"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
                   {accountBooks.map((book) => (
                     <button
@@ -303,9 +432,35 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
               <span>Google подключён</span>
             </div>
+
+            <button
+              onClick={handleExportAll}
+              disabled={exportingAll}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+            >
+              {exportingAll ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Library className="w-3.5 h-3.5" />
+              )}
+              {exportingAll ? 'Экспорт...' : 'Экспорт всех панелей'}
+            </button>
+
+            {exportAllUrl && (
+              <a
+                href={exportAllUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[10px] text-emerald-400 hover:text-emerald-300 text-center flex items-center justify-center gap-1"
+              >
+                <CheckCircle2 className="w-3 h-3" />
+                Отчет готов! Открыть
+              </a>
+            )}
+
             <button
               onClick={handleGoogleDisconnect}
-              className="w-full text-xs text-zinc-500 hover:text-red-400 transition-colors text-left px-1"
+              className="w-full text-xs text-zinc-500 hover:text-red-400 transition-colors text-left px-1 mt-1"
             >
               Отключить
             </button>

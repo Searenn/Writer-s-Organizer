@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { Account, AdBlock, AppState, Book, Chapter, Character, GoogleTokens, Prompt, Setting } from './types';
+import { Account, AdBlock, AppState, Book, Chapter, Character, Credential, GoogleTokens, Prompt, Setting } from './types';
 import { generateId, getTextLength } from './utils';
 
 const initialState: AppState = {
@@ -19,13 +19,16 @@ const initialState: AppState = {
   adBlocks: [],
   dailyGoal: 10000,
   writingLogs: [],
+  credentials: [],
 };
 
 type AppContextType = {
   state: AppState;
   isLoading: boolean;
-  addAccount: (name: string) => void;
+  addAccount: (name: string, color?: string) => void;
+  updateAccount: (id: string, name: string, color?: string) => void;
   deleteAccount: (id: string) => void;
+  reorderAccounts: (startIndex: number, endIndex: number) => void;
   addBook: (book: Omit<Book, 'id'>) => void;
   updateBook: (id: string, updates: Partial<Book>) => void;
   deleteBook: (id: string) => void;
@@ -44,10 +47,14 @@ type AppContextType = {
   addAdBlock: (adBlock: Omit<AdBlock, 'id'>) => void;
   updateAdBlock: (id: string, updates: Partial<AdBlock>) => void;
   deleteAdBlock: (id: string) => void;
+  addCredential: (credential: Omit<Credential, 'id'>) => void;
+  updateCredential: (id: string, updates: Partial<Credential>) => void;
+  deleteCredential: (id: string) => void;
   updateDailyGoal: (goal: number) => void;
   updateGoogleTokens: (tokens: GoogleTokens) => void;
   clearGoogleTokens: () => void;
   replaceChaptersForBook: (bookId: string, parsedChapters: { id: string | null; title: string; content: string }[]) => void;
+  syncCanvasChapters: (bookId: string, headings: string[]) => void;
 };
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -63,7 +70,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const initStorage = async () => {
       try {
         // 1. Try to load from file (Electron)
-        const savedFile = await window.electron.loadState();
+        const savedFile = await (window as any).electron.loadState();
         if (savedFile) {
           const parsed = JSON.parse(savedFile);
           setState({ ...initialState, ...parsed });
@@ -76,7 +83,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const newState = { ...initialState, ...parsed };
             setState(newState);
             // Save to file immediately for migration
-            await window.electron.saveState(JSON.stringify(newState));
+            await (window as any).electron.saveState(JSON.stringify(newState));
             // Optional: clear localStorage after migration
             // localStorage.removeItem('writer-organizer-state');
           }
@@ -94,12 +101,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Save state on changes
   useEffect(() => {
     if (!isLoading) {
-      window.electron.saveState(JSON.stringify(state));
+      (window as any).electron.saveState(JSON.stringify(state));
     }
   }, [state, isLoading]);
 
-  const addAccount = (name: string) => {
-    setState((s) => ({ ...s, accounts: [...s.accounts, { id: generateId(), name }] }));
+  const addAccount = (name: string, color?: string) => {
+    setState((s) => ({ ...s, accounts: [...s.accounts, { id: generateId(), name, color, order: s.accounts.length }] }));
+  };
+
+  const updateAccount = (id: string, name: string, color?: string) => {
+    setState((s) => ({
+      ...s,
+      accounts: s.accounts.map((a) => (a.id === id ? { ...a, name, color: color !== undefined ? color : a.color } : a)),
+    }));
   };
 
   const deleteAccount = (id: string) => {
@@ -112,7 +126,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         chapters: s.chapters.filter(c => !booksToDelete.includes(c.bookId)),
         characters: s.characters.filter(c => !booksToDelete.includes(c.bookId)),
         settings: s.settings.filter(set => !booksToDelete.includes(set.bookId)),
+        credentials: s.credentials.filter(cred => cred.accountId !== id),
       };
+    });
+  };
+
+  const reorderAccounts = (startIndex: number, endIndex: number) => {
+    setState((s) => {
+      const result = Array.from(s.accounts);
+      result.forEach((acc, index) => {
+        if (acc.order === undefined) acc.order = index;
+      });
+      result.sort((a, b) => (a.order || 0) - (b.order || 0));
+
+      const [removed] = result.splice(startIndex, 1);
+      result.splice(endIndex, 0, removed);
+
+      const updatedAccounts = result.map((acc, index) => ({
+        ...acc,
+        order: index
+      }));
+
+      return { ...s, accounts: updatedAccounts };
     });
   };
 
@@ -279,6 +314,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
+  const syncCanvasChapters = (bookId: string, headings: string[]) => {
+    setState((s) => {
+      const existingChapters = s.chapters.filter(c => c.bookId === bookId).sort((a, b) => a.order - b.order);
+      const otherChapters = s.chapters.filter(c => c.bookId !== bookId);
+
+      // Generate new list
+      const newChapters: Chapter[] = headings.map((title, idx) => {
+        const order = idx + 1;
+        // Keep existing if available
+        if (idx < existingChapters.length) {
+          const existing = existingChapters[idx];
+          return { ...existing, title, order };
+        } else {
+          // Create new
+          return {
+            id: generateId(),
+            bookId,
+            title,
+            content: '',
+            order,
+            isPublished: false,
+            hasPromo: false,
+          };
+        }
+      });
+
+      // Avoid unnecessary state updates if nothing changed
+      let changed = existingChapters.length !== headings.length;
+      if (!changed) {
+        for (let i = 0; i < headings.length; i++) {
+          if (existingChapters[i].title !== headings[i] || existingChapters[i].order !== (i + 1)) {
+            changed = true;
+            break;
+          }
+        }
+      }
+
+      if (!changed) return s;
+
+      return {
+        ...s,
+        chapters: [...otherChapters, ...newChapters],
+      };
+    });
+  };
+
   const addCharacter = (character: Omit<Character, 'id'>) => {
     setState((s) => ({ ...s, characters: [...s.characters, { ...character, id: generateId() }] }));
   };
@@ -339,6 +420,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setState((s) => ({ ...s, adBlocks: (s.adBlocks || []).filter((a) => a.id !== id) }));
   };
 
+  const addCredential = (credential: Omit<Credential, 'id'>) => {
+    setState((s) => ({ ...s, credentials: [...(s.credentials || []), { ...credential, id: generateId() }] }));
+  };
+
+  const updateCredential = (id: string, updates: Partial<Credential>) => {
+    setState((s) => ({
+      ...s,
+      credentials: (s.credentials || []).map((c) => (c.id === id ? { ...c, ...updates } : c)),
+    }));
+  };
+
+  const deleteCredential = (id: string) => {
+    setState((s) => ({ ...s, credentials: (s.credentials || []).filter((c) => c.id !== id) }));
+  };
+
   const updateDailyGoal = (goal: number) => {
     setState((s) => ({ ...s, dailyGoal: goal }));
   };
@@ -357,7 +453,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         state,
         isLoading,
         addAccount,
+        updateAccount,
         deleteAccount,
+        reorderAccounts,
         addBook,
         updateBook,
         deleteBook,
@@ -374,9 +472,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatePrompt,
         deletePrompt,
         replaceChaptersForBook,
+        syncCanvasChapters,
         addAdBlock,
         updateAdBlock,
         deleteAdBlock,
+        addCredential,
+        updateCredential,
+        deleteCredential,
         updateDailyGoal,
         updateGoogleTokens,
         clearGoogleTokens,

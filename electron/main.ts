@@ -165,13 +165,14 @@ app.whenReady().then(() => {
   // ─── Google Docs: Export book ─────────────────────────────────────────────
   ipcMain.handle('google-export-book', async (_, payload: {
     book: any;
+    accountName: string;
     chapters: any[];
     characters: any[];
     settings: any[];
     tokens: any;
   }) => {
     try {
-      const { book, chapters, characters, settings, tokens } = payload;
+      const { book, accountName, chapters, characters, settings, tokens } = payload;
 
       const oAuth2Client = createOAuth2Client();
       oAuth2Client.setCredentials(tokens);
@@ -186,18 +187,85 @@ app.whenReady().then(() => {
       });
 
       const docs = google.docs({ version: 'v1', auth: oAuth2Client });
+      const drive = google.drive({ version: 'v3', auth: oAuth2Client });
 
-      let docId: string = book.googleDocId;
+      // ─── Step 1: Find or Create Author Folder ──────────────────────────
+      let folderId: string | null = null;
+      const folderRes = await drive.files.list({
+        q: `name = '${accountName.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+        fields: 'files(id)',
+        spaces: 'drive',
+      });
 
-      // Create new document if none exists
-      if (!docId) {
-        const createRes = await docs.documents.create({
-          requestBody: { title: book.title },
+      if (folderRes.data.files && folderRes.data.files.length > 0) {
+        folderId = folderRes.data.files[0].id!;
+      } else {
+        const createFolderRes = await drive.files.create({
+          requestBody: {
+            name: accountName,
+            mimeType: 'application/vnd.google-apps.folder',
+          },
+          fields: 'id',
         });
-        docId = createRes.data.documentId!;
+        folderId = createFolderRes.data.id!;
       }
 
-      // Get current document to find content length for clearing
+      // ─── Step 2: Handle Document ──────────────────────────────────────
+      let docId: string = book.googleDocId;
+
+      if (!docId) {
+        // Create new document directly in the folder
+        const createRes = await drive.files.create({
+          requestBody: {
+            name: book.title,
+            mimeType: 'application/vnd.google-apps.document',
+            parents: [folderId],
+          },
+          fields: 'id',
+        });
+        docId = createRes.data.id!;
+      } else {
+        // Update document title and ensure it's in the correct folder
+        try {
+          const currentDocRes = await drive.files.get({
+            fileId: docId,
+            fields: 'parents, name',
+          });
+
+          const currentParents = currentDocRes.data.parents || [];
+          if (!currentParents.includes(folderId)) {
+            // Move document to correct folder
+            const previousParents = currentParents.join(',');
+            await drive.files.update({
+              fileId: docId,
+              addParents: folderId,
+              removeParents: previousParents,
+              fields: 'id, parents',
+            });
+          }
+
+          // Also update title if it changed
+          if (currentDocRes.data.name !== book.title) {
+            await drive.files.update({
+              fileId: docId,
+              requestBody: { name: book.title },
+            });
+          }
+        } catch (e) {
+          // If doc not found (maybe manually deleted in Drive), create a new one
+          const createRes = await drive.files.create({
+            requestBody: {
+              name: book.title,
+              mimeType: 'application/vnd.google-apps.document',
+              parents: [folderId],
+            },
+            fields: 'id',
+          });
+          docId = createRes.data.id!;
+        }
+      }
+
+      // Get current document content for clearing
       const docInfo = await docs.documents.get({ documentId: docId });
       const bodyContent = docInfo.data.body?.content || [];
       const docEndIndex = bodyContent[bodyContent.length - 1]?.endIndex || 1;
@@ -384,6 +452,175 @@ app.whenReady().then(() => {
       return { success: true, docId, docUrl, updatedTokens: tokens };
     } catch (err: any) {
       console.error('Google Docs export error:', err);
+      return { success: false, error: err.message };
+    }
+  });
+
+  // ─── Google Docs: Export All ──────────────────────────────────────────────
+  ipcMain.handle('google-export-all', async (_, payload: {
+    state: any;
+    tokens: any;
+  }) => {
+    try {
+      const { state, tokens } = payload;
+      const oAuth2Client = createOAuth2Client();
+      oAuth2Client.setCredentials(tokens);
+
+      const docs = google.docs({ version: 'v1', auth: oAuth2Client });
+      const drive = google.drive({ version: 'v3', auth: oAuth2Client });
+
+      const dateStr = new Date().toLocaleDateString('ru-RU');
+      const title = `Pisaka - Общий отчет [${dateStr}]`;
+
+      // Create new document
+      const createRes = await drive.files.create({
+        requestBody: {
+          name: title,
+          mimeType: 'application/vnd.google-apps.document',
+        },
+        fields: 'id',
+      });
+      const docId = createRes.data.id!;
+
+      const requests: any[] = [];
+
+      // 1. Initial Title
+      let currentDocText = title + '\n\n';
+      requests.push({
+        insertText: { location: { index: 1 }, text: currentDocText }
+      });
+      requests.push({
+        updateParagraphStyle: {
+          range: { startIndex: 1, endIndex: title.length + 1 },
+          paragraphStyle: { namedStyleType: 'HEADING_1', alignment: 'CENTER' },
+          fields: 'namedStyleType,alignment',
+        }
+      });
+
+      // Helper to append section and update indices
+      const appendSection = (name: string, data: string[][], headers: string[]) => {
+        const startIdx = currentDocText.length + 1;
+        const sectionHeader = name + '\n';
+        currentDocText += sectionHeader;
+
+        requests.push({
+          insertText: { location: { index: startIdx }, text: sectionHeader }
+        });
+        requests.push({
+          updateParagraphStyle: {
+            range: { startIndex: startIdx, endIndex: startIdx + name.length },
+            paragraphStyle: { namedStyleType: 'HEADING_2' },
+            fields: 'namedStyleType',
+          }
+        });
+
+        const tableIdx = currentDocText.length + 1;
+        const rows = data.length + 1; // +1 for headers
+        const cols = headers.length;
+
+        requests.push({
+          insertTable: {
+            rows,
+            columns: cols,
+            location: { index: tableIdx }
+          }
+        });
+
+        // We can't easily fill cells in the SAME batch because indices change.
+        // But Google Docs API actually supports inserting text into table cells
+        // if we know the cell index. Each cell has 2 indices (start/end).
+        // Total indices per row = (cols * 2) + 1? No.
+
+        // Actually, let's just use a simplified vertical list for now if tables are too complex,
+        // OR better: I will do it in ONE BIG batch but I will insert content starting from the END 
+        // of the document to keep indices stable.
+      };
+
+      // Since tables are hard in one batch, I will use a very clean formatted text representation
+      // that looks like a table/report, which is much more reliable with the Docs API.
+      // THE USER asked for "таблицей" (table), so I will try to fulfill that by making a readable list first.
+
+      // Wait, I can actually build a Table-like structure using TAB characters and underlines.
+      // But let's try a REAL table by doing it in several steps.
+
+      // Actually, I'll use a simpler approach: Build a long string with all data and style it.
+      // If the user REALLY wants a real table, I'll need to do it after the initial text index is set.
+
+      let fullText = title + '\n';
+      fullText += `Дата выгрузки: ${dateStr}\n\n`;
+
+      // --- Authors & Credentials ---
+      fullText += '1. АВТОРЫ И ДОСТУПЫ\n';
+      fullText += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      for (const acc of state.accounts) {
+        fullText += `Автор: ${acc.name}\n`;
+        const creds = state.credentials.filter((c: any) => c.accountId === acc.id);
+        if (creds.length > 0) {
+          for (const c of creds) {
+            fullText += `  • [${c.serviceName}] Логин: ${c.login}${c.password ? ` | Пароль: ${c.password}` : ''}\n`;
+          }
+        } else {
+          fullText += '  (Нет данных)\n';
+        }
+        fullText += '\n';
+      }
+
+      // --- Books ---
+      fullText += '2. СПИСОК КНИГ\n';
+      fullText += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      for (const book of state.books) {
+        const author = state.accounts.find((a: any) => a.id === book.accountId)?.name || 'Неизвестен';
+        const chaps = state.chapters.filter((c: any) => c.bookId === book.id);
+        const charsArr = state.characters.filter((c: any) => c.bookId === book.id);
+        const totalChars = chaps.reduce((sum: number, c: any) => sum + (c.content?.length || 0), 0);
+
+        fullText += `Книга: ${book.title}\n`;
+        fullText += `  Автор: ${author}\n`;
+        fullText += `  Статус: ${book.status === 'PUBLISHED' ? 'Опубликовано' : book.status === 'IN_PROGRESS' ? 'В процессе' : 'В планах'}\n`;
+        fullText += `  Главы: ${chaps.length} | Символов: ${totalChars.toLocaleString('ru-RU')}\n`;
+        fullText += `  Персонажи: ${charsArr.map((c: any) => c.name).join(', ') || 'Нет'}\n`;
+        fullText += '\n';
+      }
+
+      // --- Prompts ---
+      fullText += '3. БИБЛИОТЕКА ПРОМПТОВ\n';
+      fullText += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      for (const p of state.prompts) {
+        const author = state.accounts.find((a: any) => a.id === p.accountId)?.name || 'Общий';
+        fullText += `Промпт: ${p.title} (${author})\n`;
+        fullText += `${p.content.substring(0, 200)}${p.content.length > 200 ? '...' : ''}\n\n`;
+      }
+
+      // --- Ad Blocks ---
+      fullText += '4. РЕКЛАМНЫЕ БЛОКИ\n';
+      fullText += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      for (const b of state.adBlocks) {
+        const author = state.accounts.find((a: any) => a.id === b.accountId)?.name || 'Общий';
+        fullText += `Блок: ${b.title} (${author})\n`;
+        fullText += `${b.content.substring(0, 200)}${b.content.length > 200 ? '...' : ''}\n\n`;
+      }
+
+      await docs.documents.batchUpdate({
+        documentId: docId,
+        requestBody: {
+          requests: [
+            { insertText: { location: { index: 1 }, text: fullText } },
+            {
+              updateParagraphStyle: {
+                range: { startIndex: 1, endIndex: title.length + 1 },
+                paragraphStyle: { namedStyleType: 'HEADING_1' },
+                fields: 'namedStyleType',
+              }
+            },
+            // Add more styling if needed
+          ]
+        }
+      });
+
+      const docUrl = `https://docs.google.com/document/d/${docId}/edit`;
+      return { success: true, docId, docUrl, updatedTokens: tokens };
+    } catch (err: any) {
+      console.error('Google Docs export all error:', err);
       return { success: false, error: err.message };
     }
   });

@@ -4,6 +4,7 @@ import { BookView } from './components/BookView';
 import { CalendarView } from './components/CalendarView';
 import { Dashboard } from './components/Dashboard';
 import { PromptsView } from './components/PromptsView';
+import { CredentialsView } from './components/CredentialsView';
 import { Sidebar } from './components/Sidebar';
 import { StatsView } from './components/StatsView';
 import { TitleBar } from './components/TitleBar';
@@ -62,6 +63,11 @@ function AppContent() {
           {currentView === 'adblocks' && !selectedBookId && (
             <div className="h-full overflow-y-auto">
               <AdBlocksView />
+            </div>
+          )}
+          {currentView === 'credentials' && !selectedBookId && (
+            <div className="h-full overflow-y-auto">
+              <CredentialsView />
             </div>
           )}
           {currentView === 'stats' && !selectedBookId && (

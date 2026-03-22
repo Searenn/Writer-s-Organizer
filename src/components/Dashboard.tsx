@@ -1,4 +1,4 @@
-import { BookPlus, ChevronDown, ImageIcon, Plus, SortAsc, Trash2 } from 'lucide-react';
+import { BookPlus, ChevronDown, Edit2, ImageIcon, Plus, SortAsc, Trash2 } from 'lucide-react';
 import React, { useState } from 'react';
 import { useAppStore } from '../store';
 import { BookStatus } from '../types';
@@ -6,7 +6,9 @@ import { cn, formatFilePath } from '../utils';
 import { ConfirmationModal } from './ConfirmationModal';
 
 export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ onSelectBook }) => {
-  const { state, addBook, addAccount, deleteAccount, deleteBook } = useAppStore();
+  const { state, addBook, addAccount, updateAccount, deleteAccount, deleteBook, reorderAccounts } = useAppStore();
+  const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
+  const [editAccountName, setEditAccountName] = useState('');
   const [isAddingBook, setIsAddingBook] = useState(false);
   const [newBookTitle, setNewBookTitle] = useState('');
   const [newBookAccount, setNewBookAccount] = useState(state.accounts[0]?.id || '');
@@ -14,9 +16,12 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
 
   const [isAddingAccount, setIsAddingAccount] = useState(false);
   const [newAccountName, setNewAccountName] = useState('');
+  const [newAccountColor, setNewAccountColor] = useState('#10b981');
 
   const [sortBy, setSortBy] = useState<'title' | 'status' | 'chars' | 'chapters'>('title');
   const [selectedAccountId, setSelectedAccountId] = useState<string>('all');
+
+  const [editAccountColor, setEditAccountColor] = useState('#10b981');
 
   // Modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -30,6 +35,40 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
     message: '',
     onConfirm: () => { },
   });
+
+  const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+
+  const handleDragStart = (e: React.DragEvent, idx: number) => {
+    // Only allow drag if no filters are active (or we handle real indices properly)
+    if (selectedAccountId !== 'all') {
+      e.preventDefault();
+      return;
+    }
+    setDraggedIdx(idx);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    if (selectedAccountId !== 'all') return;
+    setDragOverIdx(idx);
+  };
+
+  const handleDrop = (e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    if (selectedAccountId !== 'all') return;
+    if (draggedIdx !== null && draggedIdx !== idx) {
+      reorderAccounts(draggedIdx, idx);
+    }
+    setDraggedIdx(null);
+    setDragOverIdx(null);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedIdx(null);
+    setDragOverIdx(null);
+  };
 
   const handleAddBook = (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,9 +86,23 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
   const handleAddAccount = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAccountName.trim()) return;
-    addAccount(newAccountName);
+    addAccount(newAccountName, newAccountColor);
     setNewAccountName('');
+    setNewAccountColor('#10b981');
     setIsAddingAccount(false);
+  };
+
+  const handleStartEditAccount = (id: string, name: string, color?: string) => {
+    setEditingAccountId(id);
+    setEditAccountName(name);
+    setEditAccountColor(color || '#10b981');
+  };
+
+  const handleSaveAccountName = () => {
+    if (editingAccountId && editAccountName.trim()) {
+      updateAccount(editingAccountId, editAccountName.trim(), editAccountColor);
+    }
+    setEditingAccountId(null);
   };
 
   const statusColors: Record<BookStatus, string> = {
@@ -125,6 +178,7 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
           <button
             key={acc.id}
             onClick={() => setSelectedAccountId(acc.id)}
+            title={acc.name}
             className={cn(
               "px-5 py-2 rounded-xl text-sm font-semibold transition-all duration-200",
               selectedAccountId === acc.id
@@ -132,7 +186,7 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
                 : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
             )}
           >
-            {acc.name}
+            {acc.name.includes(':') ? acc.name.split(':')[0].trim() : acc.name}
           </button>
         ))}
       </div>
@@ -141,16 +195,30 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
         <div className="mb-8 bg-zinc-900 p-6 rounded-2xl shadow-sm border border-zinc-800">
           <h2 className="text-lg font-semibold text-emerald-50 mb-4">Добавить новый аккаунт / жанр</h2>
           <form onSubmit={handleAddAccount} className="flex flex-col gap-4">
-            <div>
-              <label className="block text-sm font-medium text-zinc-200 mb-1">Название аккаунта</label>
-              <input
-                type="text"
-                value={newAccountName}
-                onChange={(e) => setNewAccountName(e.target.value)}
-                className="w-full px-4 py-2 border border-zinc-700 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none bg-zinc-950 text-zinc-100"
-                placeholder="Например: Фэнтези..."
-                required
-              />
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-zinc-200 mb-1">Название аккаунта</label>
+                <input
+                  type="text"
+                  value={newAccountName}
+                  onChange={(e) => setNewAccountName(e.target.value)}
+                  className="w-full px-4 py-2 border border-zinc-700 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none bg-zinc-950 text-zinc-100"
+                  placeholder="Например: Фэнтези..."
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-200 mb-1">Цвет аккаунта</label>
+                <div className="flex items-center gap-2 h-10">
+                  <input
+                    type="color"
+                    value={newAccountColor}
+                    onChange={(e) => setNewAccountColor(e.target.value)}
+                    className="w-10 h-10 rounded cursor-pointer border-0 p-0"
+                  />
+                  <span className="text-sm text-zinc-400">Цвет профиля</span>
+                </div>
+              </div>
             </div>
             <div className="flex justify-end gap-3 mt-2">
               <button
@@ -238,6 +306,7 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
         {state.accounts
           .filter(acc => selectedAccountId === 'all' || acc.id === selectedAccountId)
           .map((account) => {
+            const idx = state.accounts.findIndex(a => a.id === account.id);
             const accountBooks = state.books
               .filter((b) => b.accountId === account.id)
               .sort((a, b) => {
@@ -257,28 +326,94 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
               });
 
             return (
-              <div key={account.id}>
+              <div
+                key={account.id}
+                className={cn(
+                  "transition-all rounded-2xl border-2 border-transparent",
+                  dragOverIdx === idx && draggedIdx !== null && dragOverIdx !== draggedIdx
+                    ? dragOverIdx > draggedIdx ? "border-b-emerald-500 pb-4" : "border-t-emerald-500 pt-4"
+                    : "",
+                  draggedIdx === idx ? "opacity-30 border-dashed border-zinc-700" : ""
+                )}
+                draggable={selectedAccountId === 'all'}
+                onDragStart={(e) => handleDragStart(e, idx)}
+                onDragOver={(e) => handleDragOver(e, idx)}
+                onDragLeave={() => setDragOverIdx(null)}
+                onDrop={(e) => handleDrop(e, idx)}
+                onDragEnd={handleDragEnd}
+              >
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-3">
-                    <h2 className="text-xl font-semibold text-zinc-100">{account.name}</h2>
+                    {editingAccountId === account.id ? (
+                      <div className="flex items-center gap-2">
+                        <input
+                          autoFocus
+                          value={editAccountName}
+                          onChange={(e) => setEditAccountName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              handleSaveAccountName();
+                            }
+                          }}
+                          className="bg-zinc-950 text-xl font-semibold text-zinc-100 border border-emerald-500 rounded px-2 outline-none py-1"
+                        />
+                        <input
+                          type="color"
+                          value={editAccountColor}
+                          onChange={(e) => setEditAccountColor(e.target.value)}
+                          className="w-8 h-8 rounded cursor-pointer border-0 p-0 bg-transparent flex-shrink-0"
+                          title="Выберите цвет профиля"
+                        />
+                        <button
+                          onClick={handleSaveAccountName}
+                          className="p-1.5 bg-emerald-600/20 text-emerald-500 hover:bg-emerald-600/30 rounded"
+                        >
+                          OK
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        {(account.color || accountBooks[0]?.color) && (
+                          <div
+                            className="w-4 h-4 rounded-full shadow-sm"
+                            style={{ backgroundColor: account.color || accountBooks[0]?.color || '#10b981' }}
+                          />
+                        )}
+                        <h2
+                          className="text-xl font-semibold text-zinc-100 cursor-pointer hover:text-emerald-400 transition-colors"
+                          onDoubleClick={() => handleStartEditAccount(account.id, account.name, account.color)}
+                        >
+                          {account.name.includes(':') ? account.name.split(':')[0].trim() : account.name}
+                        </h2>
+                      </div>
+                    )}
                     <span className="px-2.5 py-0.5 bg-zinc-800/50 text-zinc-300 text-xs font-medium rounded-full">
                       {accountBooks.length} книг
                     </span>
                   </div>
-                  <button
-                    onClick={() => {
-                      setConfirmModal({
-                        isOpen: true,
-                        title: 'Удалить аккаунт?',
-                        message: `Вы уверены, что хотите удалить аккаунт "${account.name}" и все его книги? Это действие необратимо.`,
-                        onConfirm: () => deleteAccount(account.id),
-                      });
-                    }}
-                    className="text-zinc-500 hover:text-red-500 transition-colors p-2"
-                    title="Удалить аккаунт"
-                  >
-                    <Trash2 className="w-5 h-5" />
-                  </button>
+                  <div className="flex items-center gap-1 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={() => handleStartEditAccount(account.id, account.name, account.color)}
+                      className="text-zinc-500 hover:text-emerald-400 transition-colors p-2"
+                      title="Редактировать счет"
+                    >
+                      <Edit2 className="w-5 h-5" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        setConfirmModal({
+                          isOpen: true,
+                          title: 'Удалить аккаунт?',
+                          message: `Вы уверены, что хотите удалить аккаунт "${account.name}" и все его книги? Это действие необратимо.`,
+                          onConfirm: () => deleteAccount(account.id),
+                        });
+                      }}
+                      className="text-zinc-500 hover:text-red-500 transition-colors p-2"
+                      title="Удалить аккаунт"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  </div>
                 </div>
 
                 {accountBooks.length === 0 ? (

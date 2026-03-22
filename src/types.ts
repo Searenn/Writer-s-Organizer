@@ -1,7 +1,19 @@
 export type Account = {
   id: string;
   name: string;
+  order?: number;
   description?: string;
+  color?: string;
+};
+
+export type Credential = {
+  id: string;
+  accountId: string;
+  serviceName: string;
+  login: string;
+  password?: string;
+  notes?: string;
+  link?: string;
 };
 
 export type BookStatus = 'PLANNED' | 'IN_PROGRESS' | 'PUBLISHED';
@@ -14,8 +26,18 @@ export type Book = {
   color: string;
   coverPath?: string;
   description?: string;
+  shortDescription?: string;
+  chapterPlan?: string;
+  authorNote?: string;
   googleDocId?: string;
   canvasContent?: string;
+  adBlocks?: string[];
+  subOpensAtChapterId?: string;
+  notifiedSubOpen?: boolean;
+  notifiedCompletion?: boolean;
+  promoText?: string;
+  promoLink?: string;
+  publishedPromos?: { bookId: string; chapterId?: string }[];
 };
 
 export type Chapter = {
@@ -82,5 +104,6 @@ export type AppState = {
   adBlocks: AdBlock[];
   dailyGoal: number;
   writingLogs: WritingLog[];
+  credentials: Credential[];
   googleTokens?: GoogleTokens;
 };

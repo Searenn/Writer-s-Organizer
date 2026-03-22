@@ -19,9 +19,14 @@ declare global {
             googleRevoke: (tokens: any) => Promise<{ success: boolean; error?: string }>;
             googleExportBook: (payload: {
                 book: any;
+                accountName: string;
                 chapters: any[];
                 characters: any[];
                 settings: any[];
+                tokens: any;
+            }) => Promise<{ success: boolean; docId?: string; docUrl?: string; updatedTokens?: any; error?: string }>;
+            googleExportAll: (payload: {
+                state: any;
                 tokens: any;
             }) => Promise<{ success: boolean; docId?: string; docUrl?: string; updatedTokens?: any; error?: string }>;
         };

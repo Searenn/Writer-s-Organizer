@@ -1,12 +1,15 @@
-import { CheckCircle2, Copy, FileText, Heading, ImageIcon, Plus, Search } from 'lucide-react';
+import { CheckCircle2, Clock, Copy, FileText, Heading, ImageIcon, Plus, Search } from 'lucide-react';
 import React, { useState, useCallback, useRef } from 'react';
 import { useAppStore } from '../store';
 import { cn, formatFilePath, parseChapters } from '../utils';
 import { CanvasRichEditor, CanvasChapter } from './CanvasRichEditor';
+import { format } from 'date-fns';
+import { ru } from 'date-fns/locale';
 
 export const ChapterEditor: React.FC<{ bookId: string }> = ({ bookId }) => {
   const { state, updateBook } = useAppStore();
   const book = state.books.find(b => b.id === bookId);
+  const bookChapters = state.chapters.filter((c) => c.bookId === bookId).sort((a, b) => a.order - b.order);
 
   const [viewMode, setViewMode] = useState<'single' | 'all'>('all');
   const [selectedChapterIndex, setSelectedChapterIndex] = useState<number | null>(null);
@@ -266,8 +269,18 @@ export const ChapterEditor: React.FC<{ bookId: string }> = ({ bookId }) => {
                 <div className={cn('truncate', getHeadingStyle(chapter.level))}>
                   {chapter.title}
                 </div>
-                <div className="text-xs opacity-50 mt-0.5">
-                  {chapter.charCount.toLocaleString('ru-RU')} симв.
+                <div className="flex items-center justify-between text-xs opacity-50 mt-0.5">
+                  <span>{chapter.charCount.toLocaleString('ru-RU')} симв.</span>
+                  {bookChapters[idx]?.scheduledDate && (
+                    <div className="flex items-center gap-1">
+                      {bookChapters[idx].isPublished ? (
+                        <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                      ) : (
+                        <Clock className="w-3 h-3 text-amber-400" />
+                      )}
+                      <span>{format(new Date(bookChapters[idx].scheduledDate!), "d MMM, HH:mm", { locale: ru })}</span>
+                    </div>
+                  )}
                 </div>
               </button>
             ))

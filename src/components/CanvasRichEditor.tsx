@@ -1,4 +1,4 @@
-import { Bold, CheckCircle2, ChevronLeft, ChevronRight, Copy, Heading, Italic, Search, X } from 'lucide-react';
+import { Bold, CheckCircle2, ChevronLeft, ChevronRight, Copy, FileText, Heading, Italic, Search, X } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../store';
 import { cn } from '../utils';
@@ -64,7 +64,7 @@ function parseChaptersFromElement(el: HTMLElement): CanvasChapter[] {
 function extractChapterHtml(fullHtml: string, chapterIndex: number): string {
     const temp = document.createElement('div');
     temp.innerHTML = fullHtml;
-    // Append to body temporarily so Range works reliably across all browsers/environments
+    // Append to body temporarily so DOM operations work reliably
     document.body.appendChild(temp);
 
     try {
@@ -95,6 +95,7 @@ function extractChapterHtml(fullHtml: string, chapterIndex: number): string {
 function replaceChapterHtml(fullHtml: string, chapterIndex: number, newChapterHtml: string): string {
     const temp = document.createElement('div');
     temp.innerHTML = fullHtml;
+    // Append to body temporarily so DOM operations work reliably
     document.body.appendChild(temp);
 
     try {
@@ -112,10 +113,8 @@ function replaceChapterHtml(fullHtml: string, chapterIndex: number, newChapterHt
             range.setEnd(temp, temp.childNodes.length);
         }
 
-        // Remove the old chapter text
         range.deleteContents();
 
-        // Insert the new text
         const newTemp = document.createElement('div');
         newTemp.innerHTML = newChapterHtml;
         const fragment = document.createDocumentFragment();
@@ -159,7 +158,7 @@ export const CanvasRichEditor: React.FC<Props> = ({ bookId, viewMode, selectedCh
     const lastChapterIdx = useRef<number | null>(null);
     // Keep a ref to the latest canvasContent to avoid stale closures in debounced saves
     const canvasContentRef = useRef<string>(book?.canvasContent || '');
-    const [copied, setCopied] = useState(false);
+    const [copiedType, setCopiedType] = useState<string | null>(null);
 
     // Search state
     const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -179,10 +178,18 @@ export const CanvasRichEditor: React.FC<Props> = ({ bookId, viewMode, selectedCh
 
         const bookChanged = lastBookId.current !== bookId;
         const modeChanged = lastViewMode.current !== viewMode;
-        const chapterChanged = lastChapterIdx.current !== selectedChapterIndex;
+        // In 'all' mode, changing chapter index via sidebar does not change what should be in the editor
+        const chapterChanged = viewMode === 'single' ? lastChapterIdx.current !== selectedChapterIndex : false;
 
         // If nothing navigation-related changed and user is editing, don't reload
         if (!bookChanged && !modeChanged && !chapterChanged && isEditing.current) return;
+
+        // If we are in 'all' mode and the only thing that changed was selectedChapterIndex, 
+        // we just update the ref and abort reloading so we don't destroy cursor position.
+        if (!bookChanged && !modeChanged && viewMode === 'all') {
+            lastChapterIdx.current = selectedChapterIndex;
+            return;
+        }
 
         // If switching chapter/mode while editing, force save first
         if (isEditing.current && (modeChanged || chapterChanged) && editorRef.current) {
@@ -248,8 +255,8 @@ export const CanvasRichEditor: React.FC<Props> = ({ bookId, viewMode, selectedCh
             onChaptersChange(parsed);
         }
 
-        // Mark editing as done so the loading effect won't force-save again with stale indices
-        isEditing.current = false;
+        // Do not force isEditing to false. It will be reset onBlur. 
+        // This prevents race conditions where React re-renders while typing.
     }, [bookId, viewMode, selectedChapterIndex, book?.canvasContent, updateBook, onChaptersChange]);
 
     // Keep a ref to saveToStore so the debounced handler always calls the latest version
@@ -385,10 +392,14 @@ export const CanvasRichEditor: React.FC<Props> = ({ bookId, viewMode, selectedCh
     // Handle paste
     const handlePaste = (e: React.ClipboardEvent) => {
         e.preventDefault();
-        const html = e.clipboardData.getData('text/html');
+        let html = e.clipboardData.getData('text/html');
         const text = e.clipboardData.getData('text/plain');
 
         if (html) {
+            // Remove MS Clipboard HTML header metadata if present
+            html = html.replace(/^[\s\S]*?<!--StartFragment-->/i, '');
+            html = html.replace(/<!--EndFragment-->[\s\S]*$/i, '');
+
             const temp = document.createElement('div');
             temp.innerHTML = html;
 
@@ -399,15 +410,32 @@ export const CanvasRichEditor: React.FC<Props> = ({ bookId, viewMode, selectedCh
                 heading.parentNode?.replaceChild(h2, heading);
             });
 
+            // Convert paragraphs/spans to divs to avoid excessive margins
+            temp.querySelectorAll('p').forEach(p => {
+                const div = document.createElement('div');
+                div.innerHTML = p.innerHTML;
+                p.parentNode?.replaceChild(div, p);
+            });
+
             // Clean up styles
             temp.querySelectorAll('*').forEach(el => {
                 el.removeAttribute('style');
                 el.removeAttribute('class');
             });
 
+            // Remove empty divs
+            temp.querySelectorAll('div:empty').forEach(el => el.remove());
+
             document.execCommand('insertHTML', false, temp.innerHTML);
-        } else {
-            document.execCommand('insertText', false, text);
+        } else if (text) {
+            // Split plain text by newlines and wrap each line in a div
+            const textLines = text.split('\n');
+            const cleanHtml = textLines.map(line => {
+                const trimmed = line.trim();
+                return trimmed ? `<div>${escapeHtml(trimmed)}</div>` : '<div><br></div>';
+            }).join('');
+
+            document.execCommand('insertHTML', false, cleanHtml);
         }
     };
 
@@ -506,30 +534,101 @@ export const CanvasRichEditor: React.FC<Props> = ({ bookId, viewMode, selectedCh
         editorRef.current?.focus();
     };
 
+    // Helper to format HTML into clean text for copying
+    const getFormattedText = (htmlString: string) => {
+        const temp = document.createElement('div');
+        temp.style.position = 'absolute';
+        temp.style.left = '-9999px';
+        temp.style.whiteSpace = 'pre-wrap';
+        temp.innerHTML = htmlString;
+
+        // Strip HTML comments (like <!--EndFragment-->)
+        const iterator = document.createNodeIterator(temp, NodeFilter.SHOW_COMMENT, null);
+        let currentNode;
+        const comments: Node[] = [];
+        while ((currentNode = iterator.nextNode())) {
+            comments.push(currentNode);
+        }
+        comments.forEach(c => c.parentNode?.removeChild(c));
+
+        // Format headings to have extra spacing around them if needed
+        // But innerText usually handles H2 block spacing well.
+
+        document.body.appendChild(temp);
+        const text = temp.innerText || '';
+        document.body.removeChild(temp);
+
+        return text.replace(/^\n+|\n+$/g, '');
+    };
+
+    const copyToClipboard = async (text: string, type: string) => {
+        try {
+            await navigator.clipboard.writeText(text);
+            setCopiedType(type);
+            setTimeout(() => setCopiedType(null), 2000);
+        } catch (err) {
+            console.error('Clipboard API failed', err);
+            // Fallback for older environments or when Clipboard API throws
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            textArea.style.position = "fixed";
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            try {
+                document.execCommand('copy');
+                setCopiedType(type);
+                setTimeout(() => setCopiedType(null), 2000);
+            } catch (fallbackErr) {
+                console.error('Fallback copy failed', fallbackErr);
+            }
+            document.body.removeChild(textArea);
+        }
+    };
+
     const handleCopy = () => {
         if (!editorRef.current) return;
-        const text = editorRef.current.innerText || '';
-        navigator.clipboard.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+
+        let htmlSnippet = '';
+        if (viewMode === 'single' && selectedChapterIndex !== null) {
+            htmlSnippet = extractChapterHtml(canvasContentRef.current, selectedChapterIndex);
+        } else {
+            htmlSnippet = editorRef.current.innerHTML;
+        }
+
+        const text = getFormattedText(htmlSnippet);
+        copyToClipboard(text, 'chapter');
+    };
+
+    const handleCopyHeading = () => {
+        if (!editorRef.current || viewMode !== 'single' || selectedChapterIndex === null) return;
+        const htmlSnippet = extractChapterHtml(canvasContentRef.current, selectedChapterIndex);
+        const temp = document.createElement('div');
+        temp.innerHTML = htmlSnippet;
+        const h2 = temp.querySelector(HEADING_SELECTOR);
+        if (h2) {
+            const text = h2.textContent?.trim() || '';
+            copyToClipboard(text, 'heading');
+        }
+    };
+
+    const handleCopyChapterText = () => {
+        if (!editorRef.current || viewMode !== 'single' || selectedChapterIndex === null) return;
+        const htmlSnippet = extractChapterHtml(canvasContentRef.current, selectedChapterIndex);
+        const temp = document.createElement('div');
+        temp.innerHTML = htmlSnippet;
+        const headings = temp.querySelectorAll(HEADING_SELECTOR);
+        headings.forEach(h => h.remove());
+        const textOnlySnippet = temp.innerHTML;
+        const text = getFormattedText(textOnlySnippet);
+        copyToClipboard(text, 'text');
     };
 
     const handleCopyAll = () => {
         if (!book?.canvasContent) return;
-        const temp = document.createElement('div');
-        temp.innerHTML = book.canvasContent;
-        const text = temp.innerText || '';
-        // Also copy as HTML
-        const blobHtml = new Blob([book.canvasContent], { type: 'text/html' });
-        const blobText = new Blob([text], { type: 'text/plain' });
-        navigator.clipboard.write([
-            new ClipboardItem({
-                'text/html': blobHtml,
-                'text/plain': blobText,
-            })
-        ]);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+        const htmlSnippet = book.canvasContent;
+        const text = getFormattedText(htmlSnippet);
+        copyToClipboard(text, 'all');
     };
 
     // Determine which heading levels to show in toolbar hints
@@ -614,18 +713,56 @@ export const CanvasRichEditor: React.FC<Props> = ({ bookId, viewMode, selectedCh
                     <Italic className="w-4 h-4" />
                 </button>
                 <div className="w-px h-5 bg-zinc-800 self-center" />
-                {/* Copy button */}
-                <button
-                    onClick={viewMode === 'single' ? handleCopy : handleCopyAll}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm"
-                    title={viewMode === 'single' ? 'Копировать главу' : 'Копировать всё'}
-                >
-                    {copied ? (
-                        <><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Скопировано</span></>
-                    ) : (
-                        <><Copy className="w-4 h-4" /><span className="hidden sm:inline">{viewMode === 'single' ? 'Глава' : 'Всё'}</span></>
-                    )}
-                </button>
+                {/* Copy buttons */}
+                {viewMode === 'single' ? (
+                    <>
+                        <button
+                            onClick={handleCopyHeading}
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm"
+                            title="Копировать заголовок"
+                        >
+                            {copiedType === 'heading' ? (
+                                <><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Название</span></>
+                            ) : (
+                                <><Heading className="w-4 h-4" /><span className="hidden sm:inline">Название</span></>
+                            )}
+                        </button>
+                        <button
+                            onClick={handleCopyChapterText}
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm"
+                            title="Копировать текст главы"
+                        >
+                            {copiedType === 'text' ? (
+                                <><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Текст</span></>
+                            ) : (
+                                <><FileText className="w-4 h-4" /><span className="hidden sm:inline">Текст</span></>
+                            )}
+                        </button>
+                        <button
+                            onClick={handleCopy}
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm"
+                            title="Копировать главу"
+                        >
+                            {copiedType === 'chapter' ? (
+                                <><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Вся глава</span></>
+                            ) : (
+                                <><Copy className="w-4 h-4" /><span className="hidden sm:inline">Вся глава</span></>
+                            )}
+                        </button>
+                    </>
+                ) : (
+                    <button
+                        onClick={handleCopyAll}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm"
+                        title="Копировать всё"
+                    >
+                        {copiedType === 'all' ? (
+                            <><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Скопировано</span></>
+                        ) : (
+                            <><Copy className="w-4 h-4" /><span className="hidden sm:inline">Всё</span></>
+                        )}
+                    </button>
+                )}
             </div>
 
             {/* Editor Content */}

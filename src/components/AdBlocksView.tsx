@@ -10,6 +10,8 @@ export const AdBlocksView: React.FC = () => {
     const [isAdding, setIsAdding] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
 
+    const shortenAccountName = (name: string) => name.split(':')[0].trim();
+
     const [formData, setFormData] = useState<Omit<AdBlock, 'id'>>({
         title: '',
         content: '',
@@ -92,13 +94,13 @@ export const AdBlocksView: React.FC = () => {
                 </button>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2 mb-8 bg-zinc-900/50 p-1.5 rounded-2xl border border-zinc-800/50 w-fit">
+            <div className="flex items-center gap-2 mb-6 bg-zinc-900/50 p-1.5 rounded-xl border border-zinc-800/50 overflow-x-auto shrink-0 scrollbar-none w-full max-w-full">
                 <button
                     onClick={() => setSelectedAccountId('all')}
                     className={cn(
-                        "px-5 py-2 rounded-xl text-sm font-semibold transition-all duration-200",
+                        "px-4 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 whitespace-nowrap",
                         selectedAccountId === 'all'
-                            ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20"
+                            ? "bg-emerald-600 text-white shadow shadow-emerald-900/20"
                             : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
                     )}
                 >
@@ -107,9 +109,9 @@ export const AdBlocksView: React.FC = () => {
                 <button
                     onClick={() => setSelectedAccountId('general')}
                     className={cn(
-                        "px-5 py-2 rounded-xl text-sm font-semibold transition-all duration-200",
+                        "px-4 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 whitespace-nowrap",
                         selectedAccountId === 'general'
-                            ? "bg-zinc-100 text-zinc-950 shadow-lg shadow-black/20"
+                            ? "bg-zinc-100 text-zinc-950 shadow shadow-black/20"
                             : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
                     )}
                 >
@@ -120,13 +122,13 @@ export const AdBlocksView: React.FC = () => {
                         key={acc.id}
                         onClick={() => setSelectedAccountId(acc.id)}
                         className={cn(
-                            "px-5 py-2 rounded-xl text-sm font-semibold transition-all duration-200",
+                            "px-3 py-1 rounded-lg text-xs font-semibold transition-all duration-200 whitespace-nowrap",
                             selectedAccountId === acc.id
-                                ? "bg-zinc-100 text-zinc-950 shadow-lg shadow-black/20"
+                                ? "bg-zinc-100 text-zinc-950 shadow shadow-black/20"
                                 : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
                         )}
                     >
-                        {acc.name}
+                        {shortenAccountName(acc.name)}
                     </button>
                 ))}
             </div>
@@ -254,10 +256,10 @@ export const AdBlocksView: React.FC = () => {
                             key={block.id}
                             className="group bg-zinc-900 border border-zinc-800 rounded-xl hover:border-emerald-500/30 transition-all overflow-hidden"
                         >
-                            <div className="flex">
+                            <div className="flex h-24">
                                 {/* Cover — left side */}
                                 {block.coverPath ? (
-                                    <div className="w-28 flex-shrink-0 bg-zinc-950 overflow-hidden">
+                                    <div className="w-20 flex-shrink-0 bg-zinc-950 overflow-hidden">
                                         <img
                                             src={formatFilePath(block.coverPath)}
                                             alt={block.title}
@@ -266,8 +268,8 @@ export const AdBlocksView: React.FC = () => {
                                         />
                                     </div>
                                 ) : (
-                                    <div className="w-28 flex-shrink-0 bg-zinc-950/50 flex items-center justify-center">
-                                        <Megaphone className="w-6 h-6 text-zinc-700" />
+                                    <div className="w-20 flex-shrink-0 bg-zinc-950/50 flex items-center justify-center">
+                                        <Megaphone className="w-5 h-5 text-zinc-700" />
                                     </div>
                                 )}
 
@@ -296,7 +298,7 @@ export const AdBlocksView: React.FC = () => {
                                                     setConfirmModal({
                                                         isOpen: true,
                                                         title: 'Удалить блок?',
-                                                        message: `Вы уверены, что хотите удалить рекламный блок "${block.title}"?`,
+                                                        message: `Вы уверен, что хотите удалить рекламный блок "${block.title}"?`,
                                                         onConfirm: () => deleteAdBlock(block.id),
                                                     });
                                                 }}
@@ -307,8 +309,8 @@ export const AdBlocksView: React.FC = () => {
                                         </div>
                                     </div>
 
-                                    <div className="bg-zinc-800/40 rounded-lg p-2 relative group/content flex-1">
-                                        <pre className="text-[11px] text-zinc-300 whitespace-pre-wrap font-sans line-clamp-3">
+                                    <div className="bg-zinc-800/40 rounded-lg p-1.5 relative group/content flex-1 overflow-hidden">
+                                        <pre className="text-[10px] text-zinc-300 whitespace-pre-wrap font-sans line-clamp-3">
                                             {block.content}
                                         </pre>
                                         <button
@@ -321,7 +323,7 @@ export const AdBlocksView: React.FC = () => {
                                     </div>
 
                                     {block.coverPath && (
-                                        <div className="mt-2 flex items-center justify-between text-[9px]">
+                                        <div className="mt-1 flex items-center justify-between text-[9px]">
                                             <span className="text-zinc-600 truncate mr-2" title={block.coverPath}>
                                                 {block.coverPath}
                                             </span>
@@ -329,7 +331,7 @@ export const AdBlocksView: React.FC = () => {
                                                 onClick={() => handleCopy(block.coverPath || '')}
                                                 className="text-emerald-500 hover:text-emerald-400 font-medium shrink-0"
                                             >
-                                                Копия пути
+                                                Копия
                                             </button>
                                         </div>
                                     )}

@@ -1,11 +1,22 @@
 import { addDays } from 'date-fns';
-import { CheckCircle2, Clock, Plus, Trash2, Wand2, X } from 'lucide-react';
-import React, { useState } from 'react';
+import { CheckCircle2, Clock, Plus, Trash2, Wand2, X, Bell, Tag } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
 import { useAppStore } from '../store';
 import { cn } from '../utils';
 
 export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
-  const { state, updateChapter } = useAppStore();
+  const { state, updateChapter, syncCanvasChapters, updateBook } = useAppStore();
+  const book = state.books.find(b => b.id === bookId);
+
+  useEffect(() => {
+    if (book && typeof book.canvasContent === 'string') {
+      const temp = document.createElement('div');
+      temp.innerHTML = book.canvasContent;
+      const headings = Array.from(temp.querySelectorAll('h2')).map(h => h.textContent || 'Без названия');
+      syncCanvasChapters(bookId, headings);
+    }
+  }, [book?.canvasContent, bookId, syncCanvasChapters]);
+
   const chapters = state.chapters.filter((c) => c.bookId === bookId).sort((a, b) => a.order - b.order);
 
   const [showAutoForm, setShowAutoForm] = useState(false);
@@ -15,12 +26,17 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
   const [autoStart, setAutoStart] = useState('');
   const [timeSlots, setTimeSlots] = useState<string[]>(['10:00', '14:00', '20:00']);
   const [useFirstOverride, setUseFirstOverride] = useState(false);
-  const [firstChapterTime, setFirstChapterTime] = useState('20:00');
+  const [firstDayTimeSlots, setFirstDayTimeSlots] = useState<string[]>(['10:00']);
 
   const addTimeSlot = () => setTimeSlots(s => [...s, '12:00']);
   const removeTimeSlot = (idx: number) => setTimeSlots(s => s.filter((_, i) => i !== idx));
   const updateTimeSlot = (idx: number, val: string) =>
     setTimeSlots(s => s.map((t, i) => (i === idx ? val : t)));
+
+  const addFirstDayTimeSlot = () => setFirstDayTimeSlots(s => [...s, '12:00']);
+  const removeFirstDayTimeSlot = (idx: number) => setFirstDayTimeSlots(s => s.filter((_, i) => i !== idx));
+  const updateFirstDayTimeSlot = (idx: number, val: string) =>
+    setFirstDayTimeSlots(s => s.map((t, i) => (i === idx ? val : t)));
 
   const handleAutoSchedule = () => {
     if (!autoStart || timeSlots.length === 0) return;
@@ -39,11 +55,14 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
 
     const dates: Date[] = [];
 
-    // If first chapter override: assign first chapter separately
+    // Assign chapters to first day separately if override is active
     let startIdx = 0;
-    if (useFirstOverride && unpublished.length > 0) {
-      dates.push(makeDate(0, firstChapterTime));
-      startIdx = 1;
+    if (useFirstOverride && unpublished.length > 0 && firstDayTimeSlots.length > 0) {
+      const limit = Math.min(unpublished.length, firstDayTimeSlots.length);
+      for (let i = 0; i < limit; i++) {
+        dates.push(makeDate(0, firstDayTimeSlots[i]));
+        startIdx++;
+      }
     }
 
     // Assign remaining chapters: cycle through time slots, advance day when slots exhausted
@@ -61,7 +80,16 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
 
     // Apply dates
     unpublished.forEach((chapter, i) => {
-      updateChapter(chapter.id, { scheduledDate: dates[i].toISOString() });
+      // Need to format as local time for datetime-local to read it properly
+      // If we use toISOString, standard JS converts to UTC.
+      // So we use a custom local ISO format:
+      const d = dates[i];
+      const offsetMs = d.getTimezoneOffset() * 60 * 1000;
+      const localISOTime = new Date(d.getTime() - offsetMs).toISOString().slice(0, 16);
+
+      // Store the local time string so that `new Date(string)` gets parsed locally
+      // Or simply store the exact string the datetime-local input expects.
+      updateChapter(chapter.id, { scheduledDate: localISOTime });
     });
 
     setShowAutoForm(false);
@@ -102,6 +130,7 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
           </button>
         </div>
       </div>
+
 
       {/* Clear confirm */}
       {showClearConfirm && (
@@ -151,7 +180,7 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
             />
           </div>
 
-          {/* First chapter override */}
+          {/* First day override */}
           <div className="flex flex-col gap-2">
             <label className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer select-none">
               <input
@@ -160,18 +189,46 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
                 onChange={e => setUseFirstOverride(e.target.checked)}
                 className="rounded border-zinc-700 text-emerald-600 focus:ring-emerald-500 bg-zinc-900"
               />
-              Первая глава в особое время (один раз)
+              Особое расписание для первого дня
             </label>
             {useFirstOverride && (
-              <div className="ml-6 flex items-center gap-2">
-                <span className="text-xs text-zinc-500">Глава 1 выходит в:</span>
-                <input
-                  type="time"
-                  value={firstChapterTime}
-                  onChange={e => setFirstChapterTime(e.target.value)}
-                  className="px-3 py-1.5 text-sm border border-zinc-700 rounded-lg bg-zinc-800 text-zinc-200 outline-none focus:border-emerald-500"
-                />
-                <span className="text-xs text-zinc-500">в день начала</span>
+              <div className="ml-6 flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-zinc-400">
+                    Время выкладки в первый день ({firstDayTimeSlots.length} слот{firstDayTimeSlots.length === 1 ? '' : firstDayTimeSlots.length < 5 ? 'а' : 'ов'})
+                  </label>
+                  <button
+                    onClick={addFirstDayTimeSlot}
+                    className="flex items-center gap-1 text-xs text-emerald-500 hover:text-emerald-400 transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Добавить
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {firstDayTimeSlots.map((slot, idx) => (
+                    <div
+                      key={`first-day-${idx}`}
+                      className="flex items-center gap-2 bg-zinc-800 border border-emerald-500/20 rounded-lg px-2 py-1"
+                    >
+                      <span className="text-xs text-zinc-500 w-4 text-right">{idx + 1}.</span>
+                      <input
+                        type="time"
+                        value={slot}
+                        onChange={e => updateFirstDayTimeSlot(idx, e.target.value)}
+                        className="text-sm bg-transparent text-emerald-400 outline-none w-20"
+                      />
+                      {firstDayTimeSlots.length > 1 && (
+                        <button
+                          onClick={() => removeFirstDayTimeSlot(idx)}
+                          className="text-zinc-600 hover:text-red-400 transition-colors"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -217,7 +274,7 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
             {timeSlots.length > 0 && (
               <p className="text-xs text-zinc-600">
                 {useFirstOverride
-                  ? `Глава 1 → ${firstChapterTime}. Далее: ${timeSlots.join(', ')} — повторяется каждые сутки.`
+                  ? `В 1-й день выйдут ${firstDayTimeSlots.length} глав. Начиная со 2-го дня: ${timeSlots.join(', ')} — повторяется каждые сутки.`
                   : `Каждый день: ${timeSlots.join(', ')}`
                 }
               </p>
@@ -237,10 +294,10 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
                 };
 
                 let label = '';
-                if (useFirstOverride && i === 0) {
-                  label = makeDate(0, firstChapterTime);
+                if (useFirstOverride && i < firstDayTimeSlots.length) {
+                  label = makeDate(0, firstDayTimeSlots[i]);
                 } else {
-                  const offset = useFirstOverride ? i - 1 : i;
+                  const offset = useFirstOverride ? i - firstDayTimeSlots.length : i;
                   const day = Math.floor(offset / timeSlots.length);
                   const slot = offset % timeSlots.length;
                   label = makeDate(useFirstOverride ? day + 1 : day, timeSlots[slot]);
@@ -280,9 +337,10 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
 
       {/* Chapter list */}
       <div className="bg-zinc-900 rounded-2xl shadow-sm border border-zinc-800 overflow-hidden flex-1 flex flex-col">
-        <div className="grid grid-cols-[1fr_200px_100px_100px] gap-4 p-4 border-b border-zinc-800 bg-zinc-950 text-sm font-semibold text-zinc-300">
+        <div className="grid grid-cols-[1fr_200px_90px_90px_90px] gap-4 p-4 border-b border-zinc-800 bg-zinc-950 text-xs font-semibold text-zinc-300 uppercase tracking-wider">
           <div>Глава</div>
           <div>Дата и время выкладки</div>
+          <div className="text-center">Подписка</div>
           <div className="text-center">Промо</div>
           <div className="text-center">Статус</div>
         </div>
@@ -291,7 +349,7 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
           {chapters.map((chapter) => (
             <div
               key={chapter.id}
-              className="grid grid-cols-[1fr_200px_100px_100px] gap-4 p-3 items-center hover:bg-zinc-950 rounded-xl transition-colors border border-transparent hover:border-zinc-800"
+              className="grid grid-cols-[1fr_200px_90px_90px_90px] gap-4 p-3 items-center hover:bg-zinc-950 rounded-xl transition-colors border border-transparent hover:border-zinc-800"
             >
               <div className="font-medium text-zinc-100 truncate pr-4" title={chapter.title}>
                 {chapter.title}
@@ -300,24 +358,48 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
               <div>
                 <input
                   type="datetime-local"
-                  value={chapter.scheduledDate ? new Date(chapter.scheduledDate).toISOString().slice(0, 16) : ''}
+                  // Value should be formatted cleanly to YYYY-MM-DDTHH:mm
+                  value={chapter.scheduledDate ? chapter.scheduledDate.slice(0, 16) : ''}
                   onChange={(e) => {
                     const val = e.target.value;
-                    updateChapter(chapter.id, { scheduledDate: val ? new Date(val).toISOString() : undefined });
+                    // Store the raw local YYYY-MM-DDTHH:mm string 
+                    updateChapter(chapter.id, { scheduledDate: val || undefined });
                   }}
                   className="w-full px-3 py-1.5 text-sm border border-zinc-700 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none text-zinc-200 bg-zinc-900"
                 />
               </div>
 
               <div className="flex justify-center">
-                <label className="flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={chapter.hasPromo}
-                    onChange={(e) => updateChapter(chapter.id, { hasPromo: e.target.checked })}
-                    className="w-4 h-4 rounded border-zinc-700 text-emerald-600 focus:ring-emerald-500"
-                  />
-                </label>
+                <button
+                  onClick={() => {
+                    const isOpeningHere = book?.subOpensAtChapterId === chapter.id;
+                    updateBook(bookId, {
+                      subOpensAtChapterId: isOpeningHere ? undefined : chapter.id,
+                      notifiedSubOpen: false
+                    });
+                  }}
+                  className={cn(
+                    'w-6 h-6 flex items-center justify-center rounded-full border transition-colors',
+                    book?.subOpensAtChapterId === chapter.id
+                      ? 'border-amber-500 bg-amber-500 text-amber-950'
+                      : 'border-zinc-700 hover:border-amber-500/50 text-transparent hover:text-amber-500/50'
+                  )}
+                  title={book?.subOpensAtChapterId === chapter.id ? "Подписка открывается на этой главе" : "Отметить открытие подписки здесь"}
+                >
+                  <span className="text-xs font-bold leading-none">$</span>
+                </button>
+              </div>
+
+              <div className="flex justify-center">
+                {state.books.some(b => b.publishedPromos?.some(p => p.chapterId === chapter.id)) ? (
+                  <span className="w-6 h-6 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 flex items-center justify-center shadow-inner" title="В этой главе размещена реклама других книг">
+                    <Tag className="w-3.5 h-3.5" />
+                  </span>
+                ) : (
+                  <span className="w-6 h-6 rounded-full border border-zinc-800 flex items-center justify-center text-zinc-700 text-xs font-bold bg-zinc-900/50" title="Нет рекламы">
+                    -
+                  </span>
+                )}
               </div>
 
               <div className="flex justify-center">
