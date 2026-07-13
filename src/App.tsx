@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Menu, X } from 'lucide-react';
+import { Menu } from 'lucide-react';
 import { AdBlocksView } from './components/AdBlocksView';
 import { BookView } from './components/BookView';
 import { CalendarView } from './components/CalendarView';
@@ -13,7 +13,9 @@ import { NotesView } from './components/NotesView';
 import { KanbanView } from './components/KanbanView';
 import { PomodoroWidget } from './components/PomodoroWidget';
 import { TasksView } from './components/TasksView';
+import { LoginScreen } from './components/LoginScreen';
 import { AppProvider, useAppStore } from './store';
+import { AuthProvider, useAuth } from './context/AuthContext';
 
 function AppContent() {
   const [currentView, setCurrentView] = useState('dashboard');
@@ -57,7 +59,7 @@ function AppContent() {
           <Menu className="w-5 h-5" />
         </button>
         <span className="text-sm font-bold text-zinc-200 tracking-tight">Pisaka</span>
-        <div className="w-8" /> {/* spacer for centering */}
+        <div className="w-8" />
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -151,10 +153,35 @@ function AppContent() {
   );
 }
 
-export default function App() {
+function AuthGate() {
+  const { user, authLoading } = useAuth();
+
+  if (authLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen w-full bg-zinc-950 text-emerald-500 font-medium">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+          <span>Подключение...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginScreen />;
+  }
+
   return (
     <AppProvider>
       <AppContent />
     </AppProvider>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AuthGate />
+    </AuthProvider>
   );
 }

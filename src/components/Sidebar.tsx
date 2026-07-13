@@ -1,6 +1,7 @@
-import { Calendar, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Columns3, DollarSign, Edit2, Flame, Home, Key, Library, MoreHorizontal, Palette, Search, Settings, StickyNote, Star, Trash2, TrendingUp, X } from 'lucide-react';
+import { Calendar, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Columns3, DollarSign, Edit2, Flame, Home, Key, Library, LogOut, MoreHorizontal, Palette, Search, Settings, StickyNote, Star, Trash2, TrendingUp, X } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useAppStore } from '../store';
+import { useAuth } from '../context/AuthContext';
 import { cn, stripHtml, getLocalISODate } from '../utils';
 import { NotificationsWidget } from './NotificationsWidget';
 
@@ -31,6 +32,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectBook,
 }) => {
   const { state, updateBook, updateAccount, deleteAccount, reorderAccounts, setTheme, updateGoogleTokens, clearGoogleTokens } = useAppStore();
+  const { user, signOut } = useAuth();
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
   const [editAccountName, setEditAccountName] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -712,6 +714,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
             )}
           </div>
         )}
+
+        {/* User info & Sign out */}
+        <div className="border-t border-zinc-900 pt-2 mt-1 w-full">
+          {!isCollapsed && user && (
+            <div className="flex items-center gap-2 mb-2">
+              {user.photoURL && (
+                <img src={user.photoURL} alt={user.displayName || ''} className="w-6 h-6 rounded-full flex-shrink-0" />
+              )}
+              <span className="text-[10px] text-zinc-400 truncate flex-1 min-w-0">{user.displayName || user.email}</span>
+            </div>
+          )}
+          <button
+            onClick={signOut}
+            title="Выйти"
+            className={cn(
+              "flex items-center gap-2 w-full py-1.5 px-2 rounded-md text-[11px] font-medium text-zinc-500 hover:text-red-400 hover:bg-zinc-900 transition-colors",
+              isCollapsed && "justify-center"
+            )}
+          >
+            <LogOut className="w-3.5 h-3.5 flex-shrink-0" />
+            {!isCollapsed && <span>Выйти из аккаунта</span>}
+          </button>
+        </div>
       </div>
     </div>
   );

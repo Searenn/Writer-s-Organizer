@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { get, set } from 'idb-keyval';
+import { auth } from './lib/firebase';
 import { Account, AdBlock, AppState, AppTheme, Book, Chapter, Character, Credential, DailyEarning, EarningsEntry, FinanceGoal, GoogleTokens, KanbanTask, MoodBoardItem, Note, Platform, PomodoroSession, PomodoroSettings, Prompt, ScheduledTask, Series, Setting } from './types';
 import { generateId, getTextLength, getCanvasChaptersLength, getLocalISODate } from './utils';
 
@@ -115,40 +115,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [state, setState] = useState<AppState>(initialState);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Load state on startup from Firebase (with migration from IndexedDB)
+  // Load state on startup from Firebase — per user path: /users/{uid}/data/main
   useEffect(() => {
     const loadFromDB = async () => {
       try {
+        const uid = auth.currentUser?.uid;
+        if (!uid) {
+          setIsLoading(false);
+          return;
+        }
+
         const { doc, getDoc, setDoc } = await import('firebase/firestore');
         const { db } = await import('./lib/firebase');
-        
-        const docRef = doc(db, 'appState', 'main');
-        const docSnap = await getDoc(docRef);
-        
+
+        const userDocRef = doc(db, 'users', uid, 'data', 'main');
+        const userDocSnap = await getDoc(userDocRef);
+
         let parsed: any = null;
-        
-        if (docSnap.exists()) {
-          parsed = docSnap.data();
+
+        if (userDocSnap.exists()) {
+          parsed = userDocSnap.data();
         } else {
-          // Attempt migration from local IndexedDB
-          const savedLocal = await get<string>(STORAGE_KEY);
-          if (savedLocal) {
-            parsed = JSON.parse(savedLocal);
-            // Save migrated data to Firebase
-            await setDoc(docRef, parsed);
-            console.log('Migrated local data to Firebase!');
+          // Migration: check old shared appState/main doc
+          const oldDocRef = doc(db, 'appState', 'main');
+          const oldDocSnap = await getDoc(oldDocRef);
+          if (oldDocSnap.exists()) {
+            parsed = oldDocSnap.data();
+            await setDoc(userDocRef, parsed);
+            console.log('Migrated shared data to user-scoped path!');
           }
         }
 
         if (parsed) {
           let moodBoardItems = parsed.moodBoardItems || [];
           let moodBoardVersion = parsed.moodBoardVersion || 1;
-          
+
           if (moodBoardVersion < 2) {
             moodBoardItems = moodBoardItems.map((item: any) => {
               let colSpan = item.colSpan;
               let rowSpan = item.rowSpan;
-              
+
               if (colSpan === undefined || colSpan <= 3) {
                 const oldCol = colSpan || 1;
                 if (oldCol === 1) colSpan = 3;
@@ -161,7 +167,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 else if (oldRow === 2) rowSpan = 6;
                 else if (oldRow === 3) rowSpan = 9;
               }
-              
+
               return { ...item, colSpan, rowSpan };
             });
             moodBoardVersion = 2;
@@ -177,11 +183,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       } catch (e) {
         console.error('Failed to load state from Firebase', e);
-        // Fallback to local DB if Firebase fails (offline first load)
-        try {
-          const saved = await get<string>(STORAGE_KEY);
-          if (saved) setState({ ...initialState, ...JSON.parse(saved) });
-        } catch (localErr) {}
       } finally {
         setIsLoading(false);
       }
@@ -190,24 +191,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     loadFromDB();
   }, []);
 
-  // Save state on changes to Firebase (debounced) and IndexedDB (for backup)
+  // Save state on changes to Firebase (debounced) — per user
   useEffect(() => {
     if (isLoading) return;
-    
-    // Save locally immediately
-    set(STORAGE_KEY, JSON.stringify(state)).catch(() => {});
-    
-    // Debounce Firebase save to avoid spamming writes
+
     const timer = setTimeout(async () => {
       try {
+        const uid = auth.currentUser?.uid;
+        if (!uid) return;
+
         const { doc, setDoc } = await import('firebase/firestore');
         const { db } = await import('./lib/firebase');
-        await setDoc(doc(db, 'appState', 'main'), state);
+        // Don't persist google tokens to cloud — they're short-lived
+        const { googleTokens, ...stateToSave } = state;
+        await setDoc(doc(db, 'users', uid, 'data', 'main'), stateToSave);
       } catch (e) {
         console.error('Failed to save state to Firebase', e);
       }
     }, 2000); // 2 second debounce
-    
+
     return () => clearTimeout(timer);
   }, [state, isLoading]);
 
