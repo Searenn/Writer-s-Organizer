@@ -31,7 +31,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   setSelectedBookId,
   onSelectBook,
 }) => {
-  const { state, updateBook, updateAccount, deleteAccount, reorderAccounts, setTheme, updateGoogleTokens, clearGoogleTokens } = useAppStore();
+  const { state, isSaving, saveError, updateBook, updateAccount, deleteAccount, reorderAccounts, setTheme, updateGoogleTokens, clearGoogleTokens } = useAppStore();
   const { user, signOut } = useAuth();
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
   const [editAccountName, setEditAccountName] = useState('');
@@ -272,18 +272,43 @@ export const Sidebar: React.FC<SidebarProps> = ({
             className="flex items-center gap-2.5 text-zinc-100 font-bold text-lg select-none hover:text-emerald-400 active:scale-95 transition-all text-left outline-none"
             title="Библиотека"
           >
-            <div className="w-8 h-8 bg-emerald-500/10 rounded-lg flex items-center justify-center border border-emerald-500/10">
+            <div className="w-8 h-8 bg-emerald-500/10 rounded-lg flex items-center justify-center border border-emerald-500/10 relative">
               <Library className="w-4.5 h-4.5 text-emerald-400" />
+              {saveError && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full animate-pulse border border-zinc-950" title={`Ошибка сохранения: ${saveError}`} />
+              )}
             </div>
             {!isCollapsed && <span className="tracking-tight">Pisaka</span>}
           </button>
           
-          {!isCollapsed && streak > 0 && (
-            <div className="flex items-center gap-1 text-orange-400 bg-orange-500/5 px-2 py-0.5 rounded-full text-[10px] font-semibold border border-orange-500/10" title="Писательский стрик">
-              <Flame className="w-3 h-3 fill-orange-400/20" />
-              <span>{streak}d</span>
-            </div>
-          )}
+          {/* Cloud Sync & Writing Streak Status */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {isSaving && !isCollapsed && (
+              <div className="w-4 h-4 rounded-full flex items-center justify-center text-zinc-500 animate-spin" title="Синхронизация с облаком...">
+                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                  <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+                </svg>
+              </div>
+            )}
+            {saveError && !isCollapsed && (
+              <div className="w-4 h-4 bg-red-500/10 text-red-500 border border-red-500/20 rounded-full flex items-center justify-center cursor-help" title={`Ошибка сохранения: ${saveError}`}>
+                <span className="text-[10px] font-bold">!</span>
+              </div>
+            )}
+            {!isSaving && !saveError && !isCollapsed && (
+              <div className="w-4 h-4 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full flex items-center justify-center" title="Все изменения сохранены в облаке">
+                <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              </div>
+            )}
+            {!isCollapsed && streak > 0 && (
+              <div className="flex items-center gap-1 text-orange-400 bg-orange-500/5 px-2 py-0.5 rounded-full text-[10px] font-semibold border border-orange-500/10" title="Писательский стрик">
+                <Flame className="w-3 h-3 fill-orange-400/20" />
+                <span>{streak}d</span>
+              </div>
+            )}
+          </div>
 
           {!isCollapsed && (
             <button 
@@ -326,7 +351,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               onContextMenu={(e) => { e.preventDefault(); togglePinNav(item.id, e); }}
               title={isCollapsed ? item.label : undefined}
               className={cn(
-                'flex items-center rounded-lg transition-all duration-200 border border-transparent',
+                'flex items-center rounded-lg transition-all duration-200 border border-transparent group/nav',
                 isCollapsed 
                   ? 'w-9 h-9 justify-center mx-auto' 
                   : 'w-full gap-2 px-2.5 py-1.5 text-xs font-semibold',

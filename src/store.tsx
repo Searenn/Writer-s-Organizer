@@ -34,6 +34,8 @@ const initialState: AppState = {
 type AppContextType = {
   state: AppState;
   isLoading: boolean;
+  isSaving: boolean;
+  saveError: string | null;
   addAccount: (name: string, color?: string) => void;
   updateAccount: (id: string, name: string, color?: string) => void;
   deleteAccount: (id: string) => void;
@@ -108,6 +110,8 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, setState] = useState<AppState>(initialState);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Load state on startup from Firebase — per user path: /users/{uid}/data/main
   useEffect(() => {
@@ -181,18 +185,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     if (isLoading) return;
 
+    setIsSaving(true);
+    setSaveError(null);
+
     const timer = setTimeout(async () => {
       try {
         const uid = auth.currentUser?.uid;
-        if (!uid) return;
+        if (!uid) {
+          setIsSaving(false);
+          return;
+        }
 
         const { doc, setDoc } = await import('firebase/firestore');
         const { db } = await import('./lib/firebase');
         // Don't persist google tokens to cloud — they're short-lived
         const { googleTokens, ...stateToSave } = state;
         await setDoc(doc(db, 'users', uid, 'data', 'main'), stateToSave);
-      } catch (e) {
+        setIsSaving(false);
+      } catch (e: any) {
         console.error('Failed to save state to Firebase', e);
+        setSaveError(e.message || 'Ошибка сохранения');
+        setIsSaving(false);
       }
     }, 2000); // 2 second debounce
 
@@ -869,6 +882,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       value={{
         state,
         isLoading,
+        isSaving,
+        saveError,
         addAccount,
         updateAccount,
         deleteAccount,

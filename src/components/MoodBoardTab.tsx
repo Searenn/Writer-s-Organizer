@@ -2,7 +2,7 @@ import { ArrowDownRight, ExternalLink, GripVertical, Image, Link, Music, Palette
 import React, { useCallback, useRef, useState, useEffect } from 'react';
 import { useAppStore } from '../store';
 import { MoodBoardItem } from '../types';
-import { cn, pickFileAsDataUrl } from '../utils';
+import { cn } from '../utils';
 
 type AddMode = 'image' | 'color' | 'link' | 'text' | null;
 
@@ -272,26 +272,7 @@ export const MoodBoardTab: React.FC<{ bookId: string }> = ({ bookId }) => {
     document.addEventListener('mouseup', handleMouseUp);
   }, [updateMoodBoardItem]);
 
-  const handleAddImage = async () => {
-    const dataUrl = await pickFileAsDataUrl('image/*');
-    if (dataUrl) {
-      const pos = getNewItemPosition();
-      addMoodBoardItem({
-        bookId,
-        type: 'image',
-        content: dataUrl,
-        label: formLabel || undefined,
-        order: items.length,
-        width: 280,
-        height: 240 + (formLabel ? 40 : 0),
-        x: pos.x,
-        y: pos.y,
-      });
-      resetForm();
-    }
-  };
-
-  const handleAddItem = (type: 'color' | 'link' | 'text') => {
+  const handleAddItem = (type: 'color' | 'link' | 'text' | 'image') => {
     if (!formContent.trim()) return;
     const pos = getNewItemPosition();
     let w = 280;
@@ -308,6 +289,10 @@ export const MoodBoardTab: React.FC<{ bookId: string }> = ({ bookId }) => {
       w = 280;
       const isEmbed = isEmbeddableLink(formContent.trim());
       h = isEmbed ? 220 : 130;
+      if (formLabel) h += 40;
+    } else if (type === 'image') {
+      w = 280;
+      h = 240;
       if (formLabel) h += 40;
     }
 
@@ -372,7 +357,7 @@ export const MoodBoardTab: React.FC<{ bookId: string }> = ({ bookId }) => {
             Сортировать
           </button>
           <button
-            onClick={() => { resetForm(); handleAddImage(); }}
+            onClick={() => { resetForm(); setAddMode('image'); }}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-pink-600/10 border border-pink-500/15 text-pink-400 rounded-lg text-xs font-semibold hover:bg-pink-600/20 transition-colors cursor-pointer"
           >
             <Image className="w-3.5 h-3.5" />
@@ -402,12 +387,12 @@ export const MoodBoardTab: React.FC<{ bookId: string }> = ({ bookId }) => {
         </div>
       </div>
 
-      {/* Add form for color/link/text */}
-      {addMode && (addMode === 'color' || addMode === 'link' || addMode === 'text') && (
+      {/* Add form for color/link/text/image */}
+      {addMode && (addMode === 'color' || addMode === 'link' || addMode === 'text' || addMode === 'image') && (
         <div className="mb-6 bg-zinc-900/30 border border-zinc-800 rounded-xl p-4 animate-in fade-in slide-in-from-top-2 duration-200">
           <div className="flex items-center justify-between mb-3">
             <span className="text-xs font-bold text-zinc-300">
-              {addMode === 'color' ? 'Добавить цвет палитры' : addMode === 'link' ? 'Добавить ссылку' : 'Добавить текстовую заметку'}
+              {addMode === 'color' ? 'Добавить цвет палитры' : addMode === 'link' ? 'Добавить ссылку' : addMode === 'image' ? 'Добавить изображение по ссылке' : 'Добавить текстовую заметку'}
             </span>
             <button onClick={resetForm} className="text-zinc-500 hover:text-zinc-300 p-1">
               <X className="w-3.5 h-3.5" />
@@ -454,7 +439,16 @@ export const MoodBoardTab: React.FC<{ bookId: string }> = ({ bookId }) => {
             </div>
           ) : (
             <div className="flex items-center gap-2">
-              {addMode === 'link' ? (
+              {addMode === 'image' ? (
+                <input
+                  type="url"
+                  value={formContent}
+                  onChange={(e) => setFormContent(e.target.value)}
+                  placeholder="Ссылка на изображение (https://...)"
+                  className="flex-1 bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-zinc-300 outline-none focus:border-pink-500/30"
+                  autoFocus
+                />
+              ) : addMode === 'link' ? (
                 <input
                   type="url"
                   value={formContent}
