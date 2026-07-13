@@ -7,7 +7,7 @@ import { ConfirmationModal } from './ConfirmationModal';
 import { ColorInput } from './ColorInput';
 
 export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ onSelectBook }) => {
-  const { state, addBook, addAccount, updateAccount, deleteAccount, deleteBook, reorderAccounts, addSeries } = useAppStore();
+  const { state, addBook, updateBook, addAccount, updateAccount, deleteAccount, deleteBook, reorderAccounts, addSeries } = useAppStore();
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
   const [editAccountName, setEditAccountName] = useState('');
   
