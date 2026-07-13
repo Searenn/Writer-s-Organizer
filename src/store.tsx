@@ -200,7 +200,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const { db } = await import('./lib/firebase');
         // Don't persist google tokens to cloud — they're short-lived
         const { googleTokens, ...stateToSave } = state;
-        await setDoc(doc(db, 'users', uid, 'data', 'main'), stateToSave);
+        const cleanState = JSON.parse(JSON.stringify(stateToSave));
+        await setDoc(doc(db, 'users', uid, 'data', 'main'), cleanState);
         setIsSaving(false);
       } catch (e: any) {
         console.error('Failed to save state to Firebase', e);
