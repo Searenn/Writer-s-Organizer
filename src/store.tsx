@@ -115,14 +115,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [state, setState] = useState<AppState>(initialState);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Load state on startup from IndexedDB
+  // Load state on startup from Firebase (with migration from IndexedDB)
   useEffect(() => {
     const loadFromDB = async () => {
       try {
-        const saved = await get<string>(STORAGE_KEY);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          
+        const { doc, getDoc, setDoc } = await import('firebase/firestore');
+        const { db } = await import('./lib/firebase');
+        
+        const docRef = doc(db, 'appState', 'main');
+        const docSnap = await getDoc(docRef);
+        
+        let parsed: any = null;
+        
+        if (docSnap.exists()) {
+          parsed = docSnap.data();
+        } else {
+          // Attempt migration from local IndexedDB
+          const savedLocal = await get<string>(STORAGE_KEY);
+          if (savedLocal) {
+            parsed = JSON.parse(savedLocal);
+            // Save migrated data to Firebase
+            await setDoc(docRef, parsed);
+            console.log('Migrated local data to Firebase!');
+          }
+        }
+
+        if (parsed) {
           let moodBoardItems = parsed.moodBoardItems || [];
           let moodBoardVersion = parsed.moodBoardVersion || 1;
           
@@ -158,7 +176,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           });
         }
       } catch (e) {
-        console.error('Failed to load state from IndexedDB', e);
+        console.error('Failed to load state from Firebase', e);
+        // Fallback to local DB if Firebase fails (offline first load)
+        try {
+          const saved = await get<string>(STORAGE_KEY);
+          if (saved) setState({ ...initialState, ...JSON.parse(saved) });
+        } catch (localErr) {}
       } finally {
         setIsLoading(false);
       }
@@ -167,13 +190,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     loadFromDB();
   }, []);
 
-  // Save state on changes to IndexedDB
+  // Save state on changes to Firebase (debounced) and IndexedDB (for backup)
   useEffect(() => {
-    if (!isLoading) {
-      set(STORAGE_KEY, JSON.stringify(state)).catch((e) =>
-        console.error('Failed to save state to IndexedDB', e)
-      );
-    }
+    if (isLoading) return;
+    
+    // Save locally immediately
+    set(STORAGE_KEY, JSON.stringify(state)).catch(() => {});
+    
+    // Debounce Firebase save to avoid spamming writes
+    const timer = setTimeout(async () => {
+      try {
+        const { doc, setDoc } = await import('firebase/firestore');
+        const { db } = await import('./lib/firebase');
+        await setDoc(doc(db, 'appState', 'main'), state);
+      } catch (e) {
+        console.error('Failed to save state to Firebase', e);
+      }
+    }, 2000); // 2 second debounce
+    
+    return () => clearTimeout(timer);
   }, [state, isLoading]);
 
   // Sync theme with HTML document element
