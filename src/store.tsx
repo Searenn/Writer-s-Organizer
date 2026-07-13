@@ -129,16 +129,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         if (userDocSnap.exists()) {
           parsed = userDocSnap.data();
-        } else {
-          // Migration: check old shared appState/main doc
-          const oldDocRef = doc(db, 'appState', 'main');
-          const oldDocSnap = await getDoc(oldDocRef);
-          if (oldDocSnap.exists()) {
-            parsed = oldDocSnap.data();
-            await setDoc(userDocRef, parsed);
-            console.log('Migrated shared data to user-scoped path!');
-          }
         }
+
 
         if (parsed) {
           let moodBoardItems = parsed.moodBoardItems || [];
