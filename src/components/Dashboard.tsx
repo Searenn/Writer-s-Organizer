@@ -119,6 +119,17 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
     setEditingAccountId(null);
   };
 
+  const handleOpenAddBook = () => {
+    if (state.accounts.length === 0) {
+      alert("Сначала создайте хотя бы один аккаунт / жанр кнопкой «Новый аккаунт»!");
+      setIsAddingAccount(true);
+      return;
+    }
+    const defaultAccount = selectedAccountId !== 'all' ? selectedAccountId : state.accounts[0].id;
+    setNewBookAccount(defaultAccount);
+    setIsAddingBook(true);
+  };
+
   const statusLabels: Record<BookStatus, string> = {
     PLANNED: 'В планах',
     IN_PROGRESS: 'В процессе',
@@ -176,7 +187,7 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
               Новый аккаунт
             </button>
             <button
-              onClick={() => setIsAddingBook(true)}
+              onClick={handleOpenAddBook}
               className="flex items-center gap-1.5 bg-emerald-600/15 hover:bg-emerald-600/25 text-emerald-450 border border-emerald-500/10 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
             >
               <Plus className="w-3.5 h-3.5" />
