@@ -6,19 +6,12 @@ import { generateId, getTextLength, getCanvasChaptersLength, getLocalISODate } f
 const STORAGE_KEY = 'writer-organizer-state';
 
 const initialState: AppState = {
-  accounts: [
-    { id: '1', name: 'Эротика / СЛР (18+)' },
-    { id: '2', name: 'Янг Эдалт (YA)' },
-    { id: '3', name: 'Фэнтези Романтика' },
-  ],
+  accounts: [],
   books: [],
   chapters: [],
   characters: [],
   settings: [],
-  prompts: [
-    { id: '1', title: 'Генерация персонажа', content: 'Опиши персонажа для фэнтези романа. Внешность, характер, мотивация.', type: 'text' },
-    { id: '2', title: 'Редактура главы', content: 'Отредактируй этот текст, сделай его более эмоциональным и живым, исправь ошибки.', type: 'text' },
-  ],
+  prompts: [],
   adBlocks: [],
   dailyGoal: 10000,
   writingLogs: [],
@@ -36,6 +29,7 @@ const initialState: AppState = {
   moodBoardVersion: 2,
   scheduledTasks: [],
 };
+
 
 type AppContextType = {
   state: AppState;
