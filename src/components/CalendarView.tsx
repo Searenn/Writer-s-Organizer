@@ -45,20 +45,25 @@ export const CalendarView: React.FC<{ onSelectBook: (id: string) => void }> = ({
         return isSameDay(new Date(c.scheduledDate), cloneDay);
       });
 
+      const isOtherMonth = !isSameMonth(cloneDay, monthStart);
+
       days.push(
         <div
           key={day.toString()}
           className={cn(
-            'min-h-[120px] border-r border-b border-zinc-800 p-2 flex flex-col transition-colors',
-            !isSameMonth(day, monthStart)
-              ? 'bg-zinc-950/50 text-zinc-500'
-              : isSameDay(day, new Date())
-                ? 'bg-emerald-50/30 text-emerald-900 font-semibold'
-                : 'bg-zinc-900 text-zinc-200 hover:bg-zinc-950'
+            'border-b border-zinc-800 p-3 lg:p-2 flex flex-col transition-colors lg:border-r',
+            isOtherMonth ? 'hidden lg:flex bg-zinc-950/50 text-zinc-500' : 'flex',
+            !isOtherMonth && isSameDay(cloneDay, new Date())
+              ? 'bg-emerald-50/30 text-emerald-900 font-semibold'
+              : !isOtherMonth ? 'bg-zinc-900 text-zinc-200 hover:bg-zinc-950' : '',
+            'min-h-[100px] lg:min-h-[120px]'
           )}
         >
-          <div className="flex justify-end mb-2">
-            <span className={cn('text-sm', isSameDay(day, new Date()) ? 'bg-emerald-600 text-white w-6 h-6 rounded-full flex items-center justify-center' : '')}>
+          <div className="flex justify-between lg:justify-end mb-2 items-center">
+            <span className="lg:hidden text-xs font-semibold uppercase text-zinc-500">
+              {format(cloneDay, 'EEEE, d MMMM', { locale: ru })}
+            </span>
+            <span className={cn('text-sm hidden lg:flex', isSameDay(cloneDay, new Date()) ? 'bg-emerald-600 text-white w-6 h-6 rounded-full items-center justify-center' : '')}>
               {formattedDate}
             </span>
           </div>
@@ -110,7 +115,7 @@ export const CalendarView: React.FC<{ onSelectBook: (id: string) => void }> = ({
       day = addDays(day, 1);
     }
     rows.push(
-      <div className="grid grid-cols-7" key={day.toString()}>
+      <div className="grid grid-cols-1 lg:grid-cols-7" key={day.toString()}>
         {days}
       </div>
     );
@@ -118,7 +123,7 @@ export const CalendarView: React.FC<{ onSelectBook: (id: string) => void }> = ({
   }
 
   return (
-    <div className="p-8 max-w-7xl mx-auto h-full flex flex-col">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto h-full flex flex-col">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-3xl font-bold text-emerald-50 tracking-tight">Календарь выкладок</h1>
@@ -144,7 +149,7 @@ export const CalendarView: React.FC<{ onSelectBook: (id: string) => void }> = ({
       </div>
 
       <div className="flex-1 bg-zinc-900 rounded-2xl shadow-sm border border-zinc-800 overflow-hidden flex flex-col">
-        <div className="grid grid-cols-7 border-b border-zinc-800 bg-zinc-950">
+        <div className="hidden lg:grid grid-cols-7 border-b border-zinc-800 bg-zinc-950">
           {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((dayName) => (
             <div
               key={dayName}

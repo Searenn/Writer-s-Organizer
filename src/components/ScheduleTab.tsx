@@ -27,6 +27,8 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
   const [timeSlots, setTimeSlots] = useState<string[]>(['10:00', '14:00', '20:00']);
   const [useFirstOverride, setUseFirstOverride] = useState(false);
   const [firstDayTimeSlots, setFirstDayTimeSlots] = useState<string[]>(['10:00']);
+  const [publishDays, setPublishDays] = useState(1);
+  const [restDays, setRestDays] = useState(0);
 
   const addTimeSlot = () => setTimeSlots(s => [...s, '12:00']);
   const removeTimeSlot = (idx: number) => setTimeSlots(s => s.filter((_, i) => i !== idx));
@@ -54,6 +56,13 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
     };
 
     const dates: Date[] = [];
+    const cycleLen = publishDays + restDays;
+
+    // Helper: advance dayOffset to next publish day
+    const nextPublishDay = (d: number): number => {
+      while (restDays > 0 && (d % cycleLen) >= publishDays) d++;
+      return d;
+    };
 
     // Assign chapters to first day separately if override is active
     let startIdx = 0;
@@ -66,7 +75,9 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
     }
 
     // Assign remaining chapters: cycle through time slots, advance day when slots exhausted
+    // Skip days that fall in the "rest" part of the cycle
     let dayOffset = useFirstOverride ? 1 : 0;
+    dayOffset = nextPublishDay(dayOffset);
     let slotIdx = 0;
 
     for (let i = startIdx; i < unpublished.length; i++) {
@@ -75,6 +86,7 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
       if (slotIdx >= timeSlots.length) {
         slotIdx = 0;
         dayOffset++;
+        dayOffset = nextPublishDay(dayOffset);
       }
     }
 
@@ -105,7 +117,7 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
   const scheduledCount = chapters.filter(c => c.scheduledDate).length;
 
   return (
-    <div className="p-8 max-w-4xl mx-auto h-full flex flex-col">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto h-full flex flex-col">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-2xl font-bold text-emerald-50">Расписание выкладки</h2>
@@ -233,11 +245,63 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
             )}
           </div>
 
+          {/* Schedule pattern */}
+          <div className="flex flex-col gap-2">
+            <label className="text-xs font-medium text-zinc-400">Ритм публикации</label>
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  max={30}
+                  value={publishDays}
+                  onChange={e => setPublishDays(Math.max(1, +e.target.value || 1))}
+                  className="w-14 px-2 py-1.5 text-sm border border-zinc-700 rounded-lg bg-zinc-800 text-zinc-200 outline-none focus:border-emerald-500 text-center"
+                />
+                <span className="text-xs text-zinc-400">дн. публикуем</span>
+              </div>
+              <span className="text-zinc-600 text-sm">/</span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  max={30}
+                  value={restDays}
+                  onChange={e => setRestDays(Math.max(0, +e.target.value || 0))}
+                  className="w-14 px-2 py-1.5 text-sm border border-zinc-700 rounded-lg bg-zinc-800 text-zinc-200 outline-none focus:border-emerald-500 text-center"
+                />
+                <span className="text-xs text-zinc-400">дн. отдыхаем</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {[
+                { label: 'Ежедневно', p: 1, r: 0 },
+                { label: 'Через день', p: 1, r: 1 },
+                { label: '2 / 2', p: 2, r: 2 },
+                { label: '3 / 1', p: 3, r: 1 },
+                { label: '6 / 1', p: 6, r: 1 },
+              ].map(preset => (
+                <button
+                  key={preset.label}
+                  onClick={() => { setPublishDays(preset.p); setRestDays(preset.r); }}
+                  className={cn(
+                    'px-2.5 py-1 rounded-md text-xs font-medium transition-colors border',
+                    publishDays === preset.p && restDays === preset.r
+                      ? 'bg-emerald-600/20 text-emerald-400 border-emerald-500/30'
+                      : 'bg-zinc-800 text-zinc-500 border-zinc-700 hover:text-zinc-300 hover:border-zinc-600'
+                  )}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Time slots */}
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <label className="text-xs font-medium text-zinc-400">
-                Время выкладки каждый день ({timeSlots.length} слот{timeSlots.length === 1 ? '' : timeSlots.length < 5 ? 'а' : 'ов'})
+                Время выкладки в рабочие дни ({timeSlots.length} слот{timeSlots.length === 1 ? '' : timeSlots.length < 5 ? 'а' : 'ов'})
               </label>
               <button
                 onClick={addTimeSlot}
@@ -274,48 +338,59 @@ export const ScheduleTab: React.FC<{ bookId: string }> = ({ bookId }) => {
             {timeSlots.length > 0 && (
               <p className="text-xs text-zinc-600">
                 {useFirstOverride
-                  ? `В 1-й день выйдут ${firstDayTimeSlots.length} глав. Начиная со 2-го дня: ${timeSlots.join(', ')} — повторяется каждые сутки.`
-                  : `Каждый день: ${timeSlots.join(', ')}`
+                  ? `В 1-й день выйдут ${firstDayTimeSlots.length} глав. Далее: ${timeSlots.join(', ')}${restDays > 0 ? ` — ${publishDays} дн. публикуем, ${restDays} дн. отдыхаем` : ' — ежедневно'}.`
+                  : restDays > 0
+                    ? `${publishDays} дн. публикуем (${timeSlots.join(', ')}), ${restDays} дн. отдыхаем`
+                    : `Каждый день: ${timeSlots.join(', ')}`
                 }
               </p>
             )}
           </div>
 
           {/* Preview */}
-          {autoStart && timeSlots.length > 0 && (
-            <div className="bg-zinc-800/50 rounded-xl p-3 text-xs text-zinc-400 space-y-0.5 max-h-28 overflow-y-auto">
-              {chapters.filter(c => !c.isPublished).slice(0, 8).map((c, i) => {
-                const [yyyy, mm, dd] = autoStart.split('-').map(Number);
-                const makeDate = (dayOffset: number, time: string) => {
-                  const [h, m2] = time.split(':').map(Number);
-                  const d = new Date(yyyy, mm - 1, dd + dayOffset);
-                  d.setHours(h, m2, 0, 0);
-                  return d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-                };
+          {autoStart && timeSlots.length > 0 && (() => {
+            const [yyyy2, mm2, dd2] = autoStart.split('-').map(Number);
+            const previewMakeDate = (dayOff: number, time: string) => {
+              const [h, m2] = time.split(':').map(Number);
+              const d = new Date(yyyy2, mm2 - 1, dd2 + dayOff);
+              d.setHours(h, m2, 0, 0);
+              return d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+            };
+            const cycleLen = publishDays + restDays;
+            const isPublishDay = (d: number) => restDays === 0 || (d % cycleLen) < publishDays;
+            const nextPubDay = (d: number) => { while (!isPublishDay(d)) d++; return d; };
 
-                let label = '';
-                if (useFirstOverride && i < firstDayTimeSlots.length) {
-                  label = makeDate(0, firstDayTimeSlots[i]);
-                } else {
-                  const offset = useFirstOverride ? i - firstDayTimeSlots.length : i;
-                  const day = Math.floor(offset / timeSlots.length);
-                  const slot = offset % timeSlots.length;
-                  label = makeDate(useFirstOverride ? day + 1 : day, timeSlots[slot]);
-                }
+            const unpub = chapters.filter(c => !c.isPublished);
+            const labels: string[] = [];
+            let si = 0;
+            if (useFirstOverride && firstDayTimeSlots.length > 0) {
+              const lim = Math.min(unpub.length, firstDayTimeSlots.length);
+              for (let j = 0; j < lim; j++) { labels.push(previewMakeDate(0, firstDayTimeSlots[j])); si++; }
+            }
+            let dayOff = useFirstOverride ? 1 : 0;
+            dayOff = nextPubDay(dayOff);
+            let slotI = 0;
+            for (let j = si; j < unpub.length && labels.length < 8; j++) {
+              labels.push(previewMakeDate(dayOff, timeSlots[slotI]));
+              slotI++;
+              if (slotI >= timeSlots.length) { slotI = 0; dayOff++; dayOff = nextPubDay(dayOff); }
+            }
 
-                return (
+            return (
+              <div className="bg-zinc-800/50 rounded-xl p-3 text-xs text-zinc-400 space-y-0.5 max-h-28 overflow-y-auto">
+                {unpub.slice(0, 8).map((c, i) => (
                   <div key={c.id} className="flex items-center gap-2">
                     <span className="text-zinc-600 w-4">{i + 1}.</span>
-                    <span className="text-emerald-400">{label}</span>
+                    <span className="text-emerald-400">{labels[i]}</span>
                     <span className="truncate">{c.title}</span>
                   </div>
-                );
-              })}
-              {chapters.filter(c => !c.isPublished).length > 8 && (
-                <div className="text-zinc-600 pt-1">…и ещё {chapters.filter(c => !c.isPublished).length - 8} глав</div>
-              )}
-            </div>
-          )}
+                ))}
+                {unpub.length > 8 && (
+                  <div className="text-zinc-600 pt-1">…и ещё {unpub.length - 8} глав</div>
+                )}
+              </div>
+            );
+          })()}
 
           <div className="flex items-center gap-3 pt-1 border-t border-zinc-800">
             <button

@@ -1,6 +1,9 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { Account, AdBlock, AppState, Book, Chapter, Character, Credential, GoogleTokens, Prompt, Setting } from './types';
-import { generateId, getTextLength } from './utils';
+import { get, set } from 'idb-keyval';
+import { Account, AdBlock, AppState, AppTheme, Book, Chapter, Character, Credential, DailyEarning, EarningsEntry, FinanceGoal, GoogleTokens, KanbanTask, MoodBoardItem, Note, Platform, PomodoroSession, PomodoroSettings, Prompt, ScheduledTask, Series, Setting } from './types';
+import { generateId, getTextLength, getCanvasChaptersLength, getLocalISODate } from './utils';
+
+const STORAGE_KEY = 'writer-organizer-state';
 
 const initialState: AppState = {
   accounts: [
@@ -13,13 +16,25 @@ const initialState: AppState = {
   characters: [],
   settings: [],
   prompts: [
-    { id: '1', title: 'Генерация персонажа', content: 'Опиши персонажа для фэнтези романа. Внешность, характер, мотивация.' },
-    { id: '2', title: 'Редактура главы', content: 'Отредактируй этот текст, сделай его более эмоциональным и живым, исправь ошибки.' },
+    { id: '1', title: 'Генерация персонажа', content: 'Опиши персонажа для фэнтези романа. Внешность, характер, мотивация.', type: 'text' },
+    { id: '2', title: 'Редактура главы', content: 'Отредактируй этот текст, сделай его более эмоциональным и живым, исправь ошибки.', type: 'text' },
   ],
   adBlocks: [],
   dailyGoal: 10000,
   writingLogs: [],
   credentials: [],
+  series: [],
+  platforms: [],
+  earnings: [],
+  financeGoals: [],
+  dailyEarnings: [],
+  theme: 'mystic-dark',
+  notes: [],
+  moodBoardItems: [],
+  kanbanTasks: [],
+  pomodoroSessions: [],
+  moodBoardVersion: 2,
+  scheduledTasks: [],
 };
 
 type AppContextType = {
@@ -55,6 +70,41 @@ type AppContextType = {
   clearGoogleTokens: () => void;
   replaceChaptersForBook: (bookId: string, parsedChapters: { id: string | null; title: string; content: string }[]) => void;
   syncCanvasChapters: (bookId: string, headings: string[]) => void;
+  syncCharactersFromHtml: (bookId: string, html: string) => void;
+  addSeries: (series: Omit<Series, 'id'>) => void;
+  updateSeries: (id: string, updates: Partial<Series>) => void;
+  deleteSeries: (id: string) => void;
+  addPlatform: (platform: Omit<Platform, 'id'>) => void;
+  updatePlatform: (id: string, updates: Partial<Platform>) => void;
+  deletePlatform: (id: string) => void;
+  upsertEarnings: (entry: EarningsEntry) => void;
+  deleteEarnings: (platformId: string, month: string) => void;
+  upsertFinanceGoal: (goal: FinanceGoal) => void;
+  upsertDailyEarning: (entry: DailyEarning) => void;
+  deleteDailyEarning: (date: string) => void;
+  setTheme: (theme: AppTheme) => void;
+  // Notes
+  addNote: (note: Omit<Note, 'id' | 'createdAt' | 'updatedAt'>) => void;
+  updateNote: (id: string, updates: Partial<Note>) => void;
+  deleteNote: (id: string) => void;
+  togglePinNote: (id: string) => void;
+  // MoodBoard
+  addMoodBoardItem: (item: Omit<MoodBoardItem, 'id'>) => void;
+  updateMoodBoardItem: (id: string, updates: Partial<MoodBoardItem>) => void;
+  updateMoodBoardItems: (updates: { id: string; updates: Partial<MoodBoardItem> }[]) => void;
+  deleteMoodBoardItem: (id: string) => void;
+  // Kanban Tasks
+  addKanbanTask: (task: Omit<KanbanTask, 'id' | 'createdAt'>) => void;
+  updateKanbanTask: (id: string, updates: Partial<KanbanTask>) => void;
+  deleteKanbanTask: (id: string) => void;
+  // Pomodoro
+  addPomodoroSession: (session: Omit<PomodoroSession, 'id'>) => void;
+  updatePomodoroSettings: (settings: PomodoroSettings) => void;
+  // Scheduled Tasks
+  addScheduledTask: (task: Omit<ScheduledTask, 'id' | 'createdAt' | 'completedDates'>) => void;
+  updateScheduledTask: (id: string, updates: Partial<ScheduledTask>) => void;
+  deleteScheduledTask: (id: string) => void;
+  toggleScheduledTaskDate: (id: string, date: string) => void;
 };
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -65,45 +115,76 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [state, setState] = useState<AppState>(initialState);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Load state on startup
+  // Load state on startup from IndexedDB
   useEffect(() => {
-    const initStorage = async () => {
+    const loadFromDB = async () => {
       try {
-        // 1. Try to load from file (Electron)
-        const savedFile = await (window as any).electron.loadState();
-        if (savedFile) {
-          const parsed = JSON.parse(savedFile);
-          setState({ ...initialState, ...parsed });
-        } else {
-          // 2. Migration: If no file exists, check localStorage
-          const savedLocal = localStorage.getItem('writer-organizer-state');
-          if (savedLocal) {
-            console.log('Migrating data from localStorage to file storage...');
-            const parsed = JSON.parse(savedLocal);
-            const newState = { ...initialState, ...parsed };
-            setState(newState);
-            // Save to file immediately for migration
-            await (window as any).electron.saveState(JSON.stringify(newState));
-            // Optional: clear localStorage after migration
-            // localStorage.removeItem('writer-organizer-state');
+        const saved = await get<string>(STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          
+          let moodBoardItems = parsed.moodBoardItems || [];
+          let moodBoardVersion = parsed.moodBoardVersion || 1;
+          
+          if (moodBoardVersion < 2) {
+            moodBoardItems = moodBoardItems.map((item: any) => {
+              let colSpan = item.colSpan;
+              let rowSpan = item.rowSpan;
+              
+              if (colSpan === undefined || colSpan <= 3) {
+                const oldCol = colSpan || 1;
+                if (oldCol === 1) colSpan = 3;
+                else if (oldCol === 2) colSpan = 6;
+                else if (oldCol === 3) colSpan = 9;
+              }
+              if (rowSpan === undefined || rowSpan <= 3) {
+                const oldRow = rowSpan || 1;
+                if (oldRow === 1) rowSpan = 3;
+                else if (oldRow === 2) rowSpan = 6;
+                else if (oldRow === 3) rowSpan = 9;
+              }
+              
+              return { ...item, colSpan, rowSpan };
+            });
+            moodBoardVersion = 2;
           }
+
+          setState({
+            ...initialState,
+            ...parsed,
+            moodBoardItems,
+            moodBoardVersion,
+            kanbanTasks: parsed.kanbanTasks || [],
+          });
         }
       } catch (e) {
-        console.error('Failed to load state', e);
+        console.error('Failed to load state from IndexedDB', e);
       } finally {
         setIsLoading(false);
       }
     };
 
-    initStorage();
+    loadFromDB();
   }, []);
 
-  // Save state on changes
+  // Save state on changes to IndexedDB
   useEffect(() => {
     if (!isLoading) {
-      (window as any).electron.saveState(JSON.stringify(state));
+      set(STORAGE_KEY, JSON.stringify(state)).catch((e) =>
+        console.error('Failed to save state to IndexedDB', e)
+      );
     }
   }, [state, isLoading]);
+
+  // Sync theme with HTML document element
+  useEffect(() => {
+    const activeTheme = state.theme || 'mystic-dark';
+    document.documentElement.setAttribute('data-theme', activeTheme);
+  }, [state.theme]);
+
+  const setTheme = (theme: AppTheme) => {
+    setState((s) => ({ ...s, theme }));
+  };
 
   const addAccount = (name: string, color?: string) => {
     setState((s) => ({ ...s, accounts: [...s.accounts, { id: generateId(), name, color, order: s.accounts.length }] }));
@@ -127,6 +208,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         characters: s.characters.filter(c => !booksToDelete.includes(c.bookId)),
         settings: s.settings.filter(set => !booksToDelete.includes(set.bookId)),
         credentials: s.credentials.filter(cred => cred.accountId !== id),
+        kanbanTasks: (s.kanbanTasks || []).filter((t) => t.accountId !== id),
       };
     });
   };
@@ -152,7 +234,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addBook = (book: Omit<Book, 'id'>) => {
-    setState((s) => ({ ...s, books: [...s.books, { ...book, id: generateId() }] }));
+    setState((s) => ({ ...s, books: [...s.books, { ...book, id: generateId(), createdAt: Date.now() }] }));
   };
 
   const updateBook = (id: string, updates: Partial<Book>) => {
@@ -162,12 +244,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // If updating content, track character progress
       if (updates.canvasContent !== undefined && oldBook) {
-        const oldLen = getTextLength(oldBook.canvasContent || '');
-        const newLen = getTextLength(updates.canvasContent);
+        const oldLen = getCanvasChaptersLength(oldBook.canvasContent || '');
+        const newLen = getCanvasChaptersLength(updates.canvasContent);
         const delta = newLen - oldLen;
 
         if (delta > 0) {
-          const today = new Date().toISOString().split('T')[0];
+          const today = getLocalISODate();
           const existingLogIndex = newLogs.findIndex(l => l.date === today);
 
           if (existingLogIndex >= 0) {
@@ -204,7 +286,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setState((s) => {
       let newLogs = s.writingLogs || [];
       if (chapter.content && chapter.content.length > 0) {
-        const today = new Date().toISOString().split('T')[0];
+        const today = getLocalISODate();
         const existingLogIndex = newLogs.findIndex(l => l.date === today);
         if (existingLogIndex >= 0) {
           newLogs = [...newLogs];
@@ -231,7 +313,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const delta = newLen - oldLen;
 
         if (delta > 0) {
-          const today = new Date().toISOString().split('T')[0];
+          const today = getLocalISODate();
           const existingLogIndex = newLogs.findIndex(l => l.date === today);
 
           if (existingLogIndex >= 0) {
@@ -293,7 +375,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       let newLogs = s.writingLogs || [];
       if (totalLengthDiff > 0) {
-        const today = new Date().toISOString().split('T')[0];
+        const today = getLocalISODate();
         const existingLogIndex = newLogs.findIndex(l => l.date === today);
         if (existingLogIndex >= 0) {
           newLogs = [...newLogs];
@@ -319,15 +401,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const existingChapters = s.chapters.filter(c => c.bookId === bookId).sort((a, b) => a.order - b.order);
       const otherChapters = s.chapters.filter(c => c.bookId !== bookId);
 
-      // Generate new list
+      // Track which existing chapters have been claimed
+      const claimed = new Set<number>();
+
+      // First pass: match by title at same index (exact position match)
+      const matchedIndices: (number | null)[] = headings.map((title, idx) => {
+        if (idx < existingChapters.length && !claimed.has(idx) && existingChapters[idx].title === title) {
+          claimed.add(idx);
+          return idx;
+        }
+        return null;
+      });
+
+      // Second pass: for unmatched headings, find any unclaimed chapter with matching title
+      matchedIndices.forEach((matched, idx) => {
+        if (matched !== null) return;
+        const title = headings[idx];
+        const found = existingChapters.findIndex((c, i) => !claimed.has(i) && c.title === title);
+        if (found !== -1) {
+          claimed.add(found);
+          matchedIndices[idx] = found;
+        }
+      });
+
+      // Third pass: for still-unmatched headings, fall back to unclaimed by nearest index
+      matchedIndices.forEach((matched, idx) => {
+        if (matched !== null) return;
+        if (idx < existingChapters.length && !claimed.has(idx)) {
+          claimed.add(idx);
+          matchedIndices[idx] = idx;
+        }
+      });
+
+      // Build the new chapters list
       const newChapters: Chapter[] = headings.map((title, idx) => {
         const order = idx + 1;
-        // Keep existing if available
-        if (idx < existingChapters.length) {
-          const existing = existingChapters[idx];
+        const existingIdx = matchedIndices[idx];
+        if (existingIdx !== null) {
+          const existing = existingChapters[existingIdx];
           return { ...existing, title, order };
         } else {
-          // Create new
           return {
             id: generateId(),
             bookId,
@@ -356,6 +469,72 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return {
         ...s,
         chapters: [...otherChapters, ...newChapters],
+      };
+    });
+  };
+
+  const syncCharactersFromHtml = (bookId: string, html: string) => {
+    setState((s) => {
+      const temp = document.createElement('div');
+      temp.innerHTML = html;
+      const headings = Array.from(temp.querySelectorAll('h2'));
+      
+      const parsedCharacters: Character[] = headings.map((heading, idx) => {
+        const name = heading.textContent?.trim() || 'Новый персонаж';
+        const nextHeading = headings[idx + 1] || null;
+        const range = document.createRange();
+        range.setStartAfter(heading);
+        if (nextHeading) {
+          range.setEndBefore(nextHeading);
+        } else {
+          range.setEnd(temp, temp.childNodes.length);
+        }
+        const fragment = range.cloneContents();
+        const div = document.createElement('div');
+        div.appendChild(fragment);
+
+        let aliases = '';
+        let description = div.innerText || div.textContent || '';
+        
+        const aliasMatch = description.match(/(?:Псевдонимы|Псевдоним):\s*([^\n\r]*)/i);
+        if (aliasMatch) {
+          aliases = aliasMatch[1].trim();
+          description = description.replace(/(?:Псевдонимы|Псевдоним):\s*[^\n\r]*/i, '').trim();
+        }
+        
+        const existingChar = s.characters.find(c => c.bookId === bookId && c.name === name);
+        const color = existingChar?.color || '#10b981';
+
+        return {
+          id: existingChar?.id || `${bookId}-char-${idx}`,
+          bookId,
+          name,
+          description: description.trim(),
+          aliases,
+          color
+        };
+      });
+
+      const otherChars = s.characters.filter(c => c.bookId !== bookId);
+      const currentChars = s.characters.filter(c => c.bookId === bookId);
+      
+      let changed = currentChars.length !== parsedCharacters.length;
+      if (!changed) {
+        for (let i = 0; i < parsedCharacters.length; i++) {
+          const c1 = currentChars[i];
+          const c2 = parsedCharacters[i];
+          if (!c1 || c1.name !== c2.name || c1.description !== c2.description || c1.aliases !== c2.aliases) {
+            changed = true;
+            break;
+          }
+        }
+      }
+
+      if (!changed) return s;
+
+      return {
+        ...s,
+        characters: [...otherChars, ...parsedCharacters]
       };
     });
   };
@@ -447,6 +626,221 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setState((s) => ({ ...s, googleTokens: undefined }));
   };
 
+  // Series CRUD
+  const addSeries = (series: Omit<Series, 'id'>) => {
+    setState((s) => ({ ...s, series: [...(s.series || []), { ...series, id: generateId() }] }));
+  };
+
+  const updateSeries = (id: string, updates: Partial<Series>) => {
+    setState((s) => ({
+      ...s,
+      series: (s.series || []).map((sr) => (sr.id === id ? { ...sr, ...updates } : sr)),
+    }));
+  };
+
+  const deleteSeries = (id: string) => {
+    setState((s) => ({
+      ...s,
+      series: (s.series || []).filter((sr) => sr.id !== id),
+      books: s.books.map((b) => (b.seriesId === id ? { ...b, seriesId: undefined } : b)),
+    }));
+  };
+
+  // Platform CRUD
+  const addPlatform = (platform: Omit<Platform, 'id'>) => {
+    setState((s) => ({ ...s, platforms: [...(s.platforms || []), { ...platform, id: generateId() }] }));
+  };
+
+  const updatePlatform = (id: string, updates: Partial<Platform>) => {
+    setState((s) => ({
+      ...s,
+      platforms: (s.platforms || []).map((p) => (p.id === id ? { ...p, ...updates } : p)),
+    }));
+  };
+
+  const deletePlatform = (id: string) => {
+    setState((s) => ({
+      ...s,
+      platforms: (s.platforms || []).filter((p) => p.id !== id),
+      earnings: (s.earnings || []).filter((e) => e.platformId !== id),
+    }));
+  };
+
+  // Earnings upsert/delete
+  const upsertEarnings = (entry: EarningsEntry) => {
+    setState((s) => {
+      const earnings = [...(s.earnings || [])];
+      const idx = earnings.findIndex((e) => e.platformId === entry.platformId && e.month === entry.month);
+      if (idx >= 0) {
+        earnings[idx] = entry;
+      } else {
+        earnings.push(entry);
+      }
+      return { ...s, earnings };
+    });
+  };
+
+  const deleteEarnings = (platformId: string, month: string) => {
+    setState((s) => ({
+      ...s,
+      earnings: (s.earnings || []).filter((e) => !(e.platformId === platformId && e.month === month)),
+    }));
+  };
+
+  // Finance goals upsert
+  const upsertFinanceGoal = (goal: FinanceGoal) => {
+    setState((s) => {
+      const goals = [...(s.financeGoals || [])];
+      const idx = goals.findIndex((g) => g.month === goal.month);
+      if (idx >= 0) {
+        goals[idx] = goal;
+      } else {
+        goals.push(goal);
+      }
+      return { ...s, financeGoals: goals };
+    });
+  };
+
+  // Daily earnings upsert/delete
+  const upsertDailyEarning = (entry: DailyEarning) => {
+    setState((s) => {
+      const dailyEarnings = [...(s.dailyEarnings || [])];
+      const idx = dailyEarnings.findIndex((e) => e.date === entry.date);
+      if (idx >= 0) {
+        dailyEarnings[idx] = entry;
+      } else {
+        dailyEarnings.push(entry);
+      }
+      return { ...s, dailyEarnings };
+    });
+  };
+
+  const deleteDailyEarning = (date: string) => {
+    setState((s) => ({
+      ...s,
+      dailyEarnings: (s.dailyEarnings || []).filter((e) => e.date !== date),
+    }));
+  };
+
+  // ---- Notes CRUD ----
+  const addNote = (note: Omit<Note, 'id' | 'createdAt' | 'updatedAt'>) => {
+    const now = Date.now();
+    setState((s) => ({ ...s, notes: [...(s.notes || []), { ...note, id: generateId(), createdAt: now, updatedAt: now }] }));
+  };
+
+  const updateNote = (id: string, updates: Partial<Note>) => {
+    setState((s) => ({
+      ...s,
+      notes: (s.notes || []).map((n) => (n.id === id ? { ...n, ...updates, updatedAt: Date.now() } : n)),
+    }));
+  };
+
+  const deleteNote = (id: string) => {
+    setState((s) => ({ ...s, notes: (s.notes || []).filter((n) => n.id !== id) }));
+  };
+
+  const togglePinNote = (id: string) => {
+    setState((s) => ({
+      ...s,
+      notes: (s.notes || []).map((n) => (n.id === id ? { ...n, isPinned: !n.isPinned, updatedAt: Date.now() } : n)),
+    }));
+  };
+
+  // ---- MoodBoard CRUD ----
+  const addMoodBoardItem = (item: Omit<MoodBoardItem, 'id'>) => {
+    setState((s) => ({ ...s, moodBoardItems: [...(s.moodBoardItems || []), { ...item, id: generateId() }] }));
+  };
+
+  const updateMoodBoardItem = (id: string, updates: Partial<MoodBoardItem>) => {
+    setState((s) => ({
+      ...s,
+      moodBoardItems: (s.moodBoardItems || []).map((m) => (m.id === id ? { ...m, ...updates } : m)),
+    }));
+  };
+
+  const updateMoodBoardItems = (updatesList: { id: string; updates: Partial<MoodBoardItem> }[]) => {
+    setState((s) => {
+      const updatesMap = new Map(updatesList.map(u => [u.id, u.updates]));
+      return {
+        ...s,
+        moodBoardItems: (s.moodBoardItems || []).map((m) => {
+          const u = updatesMap.get(m.id);
+          return u ? { ...m, ...u } : m;
+        }),
+      };
+    });
+  };
+
+  const deleteMoodBoardItem = (id: string) => {
+    setState((s) => ({ ...s, moodBoardItems: (s.moodBoardItems || []).filter((m) => m.id !== id) }));
+  };
+
+  // ---- Kanban Tasks CRUD ----
+  const addKanbanTask = (task: Omit<KanbanTask, 'id' | 'createdAt'>) => {
+    setState((s) => ({
+      ...s,
+      kanbanTasks: [...(s.kanbanTasks || []), { ...task, id: generateId(), createdAt: Date.now() }]
+    }));
+  };
+
+  const updateKanbanTask = (id: string, updates: Partial<KanbanTask>) => {
+    setState((s) => ({
+      ...s,
+      kanbanTasks: (s.kanbanTasks || []).map((t) => (t.id === id ? { ...t, ...updates } : t))
+    }));
+  };
+
+  const deleteKanbanTask = (id: string) => {
+    setState((s) => ({
+      ...s,
+      kanbanTasks: (s.kanbanTasks || []).filter((t) => t.id !== id)
+    }));
+  };
+
+  // ---- Pomodoro ----
+  const addPomodoroSession = (session: Omit<PomodoroSession, 'id'>) => {
+    setState((s) => ({ ...s, pomodoroSessions: [...(s.pomodoroSessions || []), { ...session, id: generateId() }] }));
+  };
+
+  const updatePomodoroSettings = (settings: PomodoroSettings) => {
+    setState((s) => ({ ...s, pomodoroSettings: settings }));
+  };
+
+  // ---- Scheduled Tasks ----
+  const addScheduledTask = (task: Omit<ScheduledTask, 'id' | 'createdAt' | 'completedDates'>) => {
+    setState((s) => ({
+      ...s,
+      scheduledTasks: [...(s.scheduledTasks || []), { ...task, id: generateId(), createdAt: Date.now(), completedDates: [] }]
+    }));
+  };
+
+  const updateScheduledTask = (id: string, updates: Partial<ScheduledTask>) => {
+    setState((s) => ({
+      ...s,
+      scheduledTasks: (s.scheduledTasks || []).map((t) => (t.id === id ? { ...t, ...updates } : t))
+    }));
+  };
+
+  const deleteScheduledTask = (id: string) => {
+    setState((s) => ({
+      ...s,
+      scheduledTasks: (s.scheduledTasks || []).filter((t) => t.id !== id)
+    }));
+  };
+
+  const toggleScheduledTaskDate = (id: string, date: string) => {
+    setState((s) => ({
+      ...s,
+      scheduledTasks: (s.scheduledTasks || []).map((t) => {
+        if (t.id !== id) return t;
+        const completed = t.completedDates.includes(date)
+          ? t.completedDates.filter((d) => d !== date)
+          : [...t.completedDates, date];
+        return { ...t, completedDates: completed };
+      })
+    }));
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -473,6 +867,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deletePrompt,
         replaceChaptersForBook,
         syncCanvasChapters,
+        syncCharactersFromHtml,
         addAdBlock,
         updateAdBlock,
         deleteAdBlock,
@@ -482,6 +877,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateDailyGoal,
         updateGoogleTokens,
         clearGoogleTokens,
+        addSeries,
+        updateSeries,
+        deleteSeries,
+        addPlatform,
+        updatePlatform,
+        deletePlatform,
+        upsertEarnings,
+        deleteEarnings,
+        upsertFinanceGoal,
+        upsertDailyEarning,
+        deleteDailyEarning,
+        setTheme,
+        addNote,
+        updateNote,
+        deleteNote,
+        togglePinNote,
+        addMoodBoardItem,
+        updateMoodBoardItem,
+        updateMoodBoardItems,
+        deleteMoodBoardItem,
+        addKanbanTask,
+        updateKanbanTask,
+        deleteKanbanTask,
+        addPomodoroSession,
+        updatePomodoroSettings,
+        addScheduledTask,
+        updateScheduledTask,
+        deleteScheduledTask,
+        toggleScheduledTaskDate,
       }}
     >
       {children}

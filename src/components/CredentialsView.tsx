@@ -163,7 +163,7 @@ export const CredentialsView: React.FC = () => {
     };
 
     return (
-        <div className="p-8 pb-32 max-w-5xl mx-auto flex flex-col h-full overflow-hidden">
+        <div className="p-4 sm:p-6 lg:p-8 pb-32 max-w-5xl mx-auto flex flex-col h-full overflow-hidden">
             <div className="flex items-center justify-between mb-8 shrink-0">
                 <div>
                     <h1 className="text-3xl font-bold tracking-tight text-zinc-100 flex items-center gap-3">

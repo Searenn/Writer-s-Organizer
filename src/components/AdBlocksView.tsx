@@ -2,7 +2,7 @@ import { Copy, ImageIcon, Megaphone, Plus, Settings, Trash2, X } from 'lucide-re
 import React, { useState } from 'react';
 import { useAppStore } from '../store';
 import { AdBlock } from '../types';
-import { cn, formatFilePath } from '../utils';
+import { cn, pickFileAsDataUrl } from '../utils';
 import { ConfirmationModal } from './ConfirmationModal';
 
 export const AdBlocksView: React.FC = () => {
@@ -70,7 +70,7 @@ export const AdBlocksView: React.FC = () => {
     };
 
     return (
-        <div className="p-8 max-w-6xl mx-auto">
+        <div className="p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto">
             <div className="flex items-center justify-between mb-8">
                 <div>
                     <h1 className="text-3xl font-bold text-white mb-2">Рекламные блоки</h1>
@@ -171,21 +171,21 @@ export const AdBlocksView: React.FC = () => {
                                 />
                             </div>
                             <div>
-                                <label className="block text-sm font-medium text-zinc-400 mb-1">Путь к обложке (локальный)</label>
+                                <label className="block text-sm font-medium text-zinc-400 mb-1">Обложка</label>
                                 <div className="flex gap-2">
                                     <input
                                         type="text"
                                         value={formData.coverPath}
                                         onChange={(e) => setFormData({ ...formData, coverPath: e.target.value })}
                                         className="flex-1 bg-zinc-800 border-zinc-700 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-emerald-500 outline-none"
-                                        placeholder="C:\Users\...\cover.jpg"
+                                        placeholder="URL или выберите файл"
                                     />
                                     <button
                                         type="button"
                                         onClick={async () => {
-                                            const path = await window.electron.selectFile();
-                                            if (path) {
-                                                setFormData({ ...formData, coverPath: path });
+                                            const dataUrl = await pickFileAsDataUrl('image/*');
+                                            if (dataUrl) {
+                                                setFormData({ ...formData, coverPath: dataUrl });
                                             }
                                         }}
                                         className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-2 rounded-lg border border-zinc-700"
@@ -194,7 +194,7 @@ export const AdBlocksView: React.FC = () => {
                                     </button>
                                 </div>
                                 <p className="text-xs text-zinc-500 mt-1">
-                                    Укажите полный путь к файлу изображения на вашем компьютере.
+                                    Выберите файл изображения или вставьте URL.
                                 </p>
                             </div>
 
@@ -217,7 +217,7 @@ export const AdBlocksView: React.FC = () => {
                                 <div className="bg-zinc-800 rounded-lg p-2 border border-zinc-700">
                                     <p className="text-xs text-zinc-500 mb-2">Предпросмотр обложки:</p>
                                     <img
-                                        src={formatFilePath(formData.coverPath)}
+                                        src={formData.coverPath}
                                         alt="Preview"
                                         className="max-h-64 mx-auto rounded overflow-hidden object-contain shadow-2xl bg-black/20"
                                         onError={(e) => (e.currentTarget.style.display = 'none')}
@@ -261,7 +261,7 @@ export const AdBlocksView: React.FC = () => {
                                 {block.coverPath ? (
                                     <div className="w-20 flex-shrink-0 bg-zinc-950 overflow-hidden">
                                         <img
-                                            src={formatFilePath(block.coverPath)}
+                                            src={block.coverPath}
                                             alt={block.title}
                                             className="w-full h-full object-cover"
                                             onError={(e) => (e.currentTarget.style.display = 'none')}

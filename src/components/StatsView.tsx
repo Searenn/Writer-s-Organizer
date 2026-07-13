@@ -4,7 +4,7 @@ import { Award, Target, TrendingUp } from 'lucide-react';
 import React, { useMemo, useState } from 'react';
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis, Cell } from 'recharts';
 import { useAppStore } from '../store';
-import { cn } from '../utils';
+import { cn, getLocalISODate } from '../utils';
 
 export const StatsView: React.FC = () => {
   const { state, updateDailyGoal } = useAppStore();
@@ -13,7 +13,7 @@ export const StatsView: React.FC = () => {
   const [goalInput, setGoalInput] = useState(state.dailyGoal.toString());
 
   const today = new Date();
-  const todayStr = today.toISOString().split('T')[0];
+  const todayStr = getLocalISODate(today);
   const todayLog = state.writingLogs?.find(l => l.date === todayStr);
   const todayCount = todayLog ? todayLog.count : 0;
   const progress = Math.min(100, Math.round((todayCount / state.dailyGoal) * 100));
@@ -28,7 +28,7 @@ export const StatsView: React.FC = () => {
 
   const chartData = useMemo(() => {
     const logs = state.writingLogs || [];
-    
+
     if (timeRange === 'week') {
       const start = subDays(today, 6);
       const days = eachDayOfInterval({ start, end: today });
@@ -42,7 +42,7 @@ export const StatsView: React.FC = () => {
         };
       });
     }
-    
+
     if (timeRange === 'month') {
       const start = subDays(today, 29);
       const days = eachDayOfInterval({ start, end: today });
@@ -79,7 +79,7 @@ export const StatsView: React.FC = () => {
   const totalAllTime = (state.writingLogs || []).reduce((sum, l) => sum + l.count, 0);
 
   return (
-    <div className="p-8 max-w-6xl mx-auto h-full flex flex-col overflow-y-auto">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto h-full flex flex-col overflow-y-auto">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-3xl font-bold text-emerald-50 tracking-tight flex items-center gap-3">
@@ -177,16 +177,16 @@ export const StatsView: React.FC = () => {
         <div className="flex-1 w-full">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-              <XAxis 
-                dataKey="name" 
-                axisLine={false} 
-                tickLine={false} 
-                tick={{ fill: '#a1a1aa', fontSize: 12 }} 
+              <XAxis
+                dataKey="name"
+                axisLine={false}
+                tickLine={false}
+                tick={{ fill: '#a1a1aa', fontSize: 12 }}
                 dy={10}
               />
-              <YAxis 
-                axisLine={false} 
-                tickLine={false} 
+              <YAxis
+                axisLine={false}
+                tickLine={false}
                 tick={{ fill: '#a1a1aa', fontSize: 12 }}
                 tickFormatter={(value) => value >= 1000 ? `${(value / 1000).toFixed(0)}k` : value}
               />

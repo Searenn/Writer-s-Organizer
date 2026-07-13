@@ -24,13 +24,11 @@
     "noEmit": true
   },
   "include": [
-    "src",
-    "electron"
+    "src"
   ],
   "exclude": [
     "node_modules",
     "dist",
-    "dist-electron",
     "release"
   ]
 }

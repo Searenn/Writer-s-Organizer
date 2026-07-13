@@ -10,7 +10,7 @@ type Notification = {
     message: string;
 };
 
-export const NotificationsWidget: React.FC = () => {
+export const NotificationsWidget: React.FC<{ isCollapsed?: boolean }> = ({ isCollapsed }) => {
     const { state, updateBook } = useAppStore();
     const [notifications, setNotifications] = useState<Notification[]>([]);
     const [tick, setTick] = useState(0);
@@ -76,6 +76,19 @@ export const NotificationsWidget: React.FC = () => {
     };
 
     if (notifications.length === 0) return null;
+
+    if (isCollapsed) {
+        return (
+            <div className="flex justify-center py-2 relative" title={`Напоминания: ${notifications.length}`}>
+                <div className="relative p-2 bg-amber-500/10 text-amber-500 rounded-lg animate-pulse border border-amber-500/15">
+                    <Bell className="w-4 h-4" />
+                    <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 rounded-full text-[8px] font-bold text-white flex items-center justify-center">
+                        {notifications.length}
+                    </span>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="px-4 py-3 mb-2">

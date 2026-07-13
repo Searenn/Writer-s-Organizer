@@ -1,27 +1,33 @@
-import { BookPlus, ChevronDown, Edit2, ImageIcon, Plus, SortAsc, Trash2 } from 'lucide-react';
+import { BookPlus, ChevronDown, Edit2, ImageIcon, Plus, SortAsc, Trash2, Layers, X, Search, BookOpen, FileText } from 'lucide-react';
 import React, { useState } from 'react';
 import { useAppStore } from '../store';
 import { BookStatus } from '../types';
-import { cn, formatFilePath } from '../utils';
+import { cn } from '../utils';
 import { ConfirmationModal } from './ConfirmationModal';
+import { ColorInput } from './ColorInput';
 
 export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ onSelectBook }) => {
-  const { state, addBook, addAccount, updateAccount, deleteAccount, deleteBook, reorderAccounts } = useAppStore();
+  const { state, addBook, addAccount, updateAccount, deleteAccount, deleteBook, reorderAccounts, addSeries } = useAppStore();
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
   const [editAccountName, setEditAccountName] = useState('');
   const [isAddingBook, setIsAddingBook] = useState(false);
   const [newBookTitle, setNewBookTitle] = useState('');
   const [newBookAccount, setNewBookAccount] = useState(state.accounts[0]?.id || '');
   const [newBookColor, setNewBookColor] = useState('#6366f1');
+  const [newBookSeriesId, setNewBookSeriesId] = useState<string>('');
+  const [newSeriesName, setNewSeriesName] = useState('');
+  const [isCreatingNewSeries, setIsCreatingNewSeries] = useState(false);
 
   const [isAddingAccount, setIsAddingAccount] = useState(false);
   const [newAccountName, setNewAccountName] = useState('');
   const [newAccountColor, setNewAccountColor] = useState('#10b981');
 
-  const [sortBy, setSortBy] = useState<'title' | 'status' | 'chars' | 'chapters'>('title');
+  const [sortBy, setSortBy] = useState<'date' | 'title' | 'status' | 'chars' | 'chapters'>('date');
   const [selectedAccountId, setSelectedAccountId] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState('');
 
   const [editAccountColor, setEditAccountColor] = useState('#10b981');
+  const [hoveredBookId, setHoveredBookId] = useState<string | null>(null);
 
   // Modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -40,7 +46,6 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
   const handleDragStart = (e: React.DragEvent, idx: number) => {
-    // Only allow drag if no filters are active (or we handle real indices properly)
     if (selectedAccountId !== 'all') {
       e.preventDefault();
       return;
@@ -73,13 +78,22 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
   const handleAddBook = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newBookTitle.trim() || !newBookAccount) return;
+    let seriesId = newBookSeriesId || undefined;
+    if (isCreatingNewSeries && newSeriesName.trim()) {
+      addSeries({ accountId: newBookAccount, name: newSeriesName.trim() });
+      seriesId = undefined; 
+    }
     addBook({
       title: newBookTitle,
       accountId: newBookAccount,
       status: 'PLANNED',
       color: newBookColor,
+      seriesId,
     });
     setNewBookTitle('');
+    setNewBookSeriesId('');
+    setNewSeriesName('');
+    setIsCreatingNewSeries(false);
     setIsAddingBook(false);
   };
 
@@ -105,414 +119,519 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
     setEditingAccountId(null);
   };
 
-  const statusColors: Record<BookStatus, string> = {
-    PLANNED: 'bg-zinc-800/30 text-zinc-400 border-zinc-800',
-    IN_PROGRESS: 'bg-amber-500/10 text-amber-500 border-amber-500/20',
-    PUBLISHED: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
-  };
-
-  const statusBorderColors: Record<BookStatus, string> = {
-    PLANNED: 'border-zinc-800',
-    IN_PROGRESS: 'border-amber-500/30',
-    PUBLISHED: 'border-emerald-500/30',
-  };
-
   const statusLabels: Record<BookStatus, string> = {
     PLANNED: 'В планах',
     IN_PROGRESS: 'В процессе',
     PUBLISHED: 'Опубликовано',
   };
 
+  const getInitials = (title: string) => {
+    return title.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase() || 'КН';
+  };
+
   return (
-    <div className="p-8 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between mb-8">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto">
+      {/* Header */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
         <div>
-          <h1 className="text-3xl font-bold text-emerald-50 tracking-tight">Библиотека</h1>
+          <h1 className="text-2xl font-bold text-zinc-100 tracking-tight">Библиотека</h1>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-1.5 shadow-sm">
-            <SortAsc className="w-4 h-4 text-zinc-500" />
+        
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Search bar */}
+          <div className="relative w-full sm:w-60">
+            <Search className="absolute left-3 top-2.5 w-3.5 h-3.5 text-zinc-500" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Поиск книги по названию..."
+              className="w-full bg-zinc-900/40 border border-zinc-900 rounded-lg pl-9 pr-3 py-1.5 text-xs text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-zinc-800 transition-colors"
+            />
+          </div>
+
+          {/* Sort bar */}
+          <div className="flex items-center gap-1.5 bg-zinc-900/40 border border-zinc-900 rounded-lg px-2.5 py-1.5">
+            <SortAsc className="w-3.5 h-3.5 text-zinc-550" />
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as any)}
-              className="bg-zinc-900 text-sm font-medium text-zinc-300 outline-none cursor-pointer hover:text-white transition-colors"
+              className="bg-transparent text-xs font-semibold text-zinc-400 outline-none cursor-pointer hover:text-zinc-200 transition-colors"
             >
+              <option value="date">По дате</option>
               <option value="title">По названию</option>
               <option value="status">По статусу</option>
               <option value="chars">По символам</option>
               <option value="chapters">По главам</option>
             </select>
           </div>
-          <div className="flex gap-3">
+
+          {/* Actions */}
+          <div className="flex gap-2">
             <button
               onClick={() => setIsAddingAccount(true)}
-              className="flex items-center gap-2 bg-zinc-800 text-zinc-200 px-4 py-2 rounded-xl font-medium hover:bg-zinc-700 transition-colors shadow-sm"
+              className="flex items-center gap-1.5 border border-zinc-900 hover:border-zinc-800 hover:bg-zinc-900/40 text-zinc-300 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
             >
-              <Plus className="w-5 h-5" />
+              <Plus className="w-3.5 h-3.5" />
               Новый аккаунт
             </button>
             <button
               onClick={() => setIsAddingBook(true)}
-              className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-xl font-medium hover:bg-emerald-700 transition-colors shadow-sm"
+              className="flex items-center gap-1.5 bg-emerald-600/15 hover:bg-emerald-600/25 text-emerald-450 border border-emerald-500/10 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
             >
-              <Plus className="w-5 h-5" />
+              <Plus className="w-3.5 h-3.5" />
               Новая книга
             </button>
           </div>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 mb-8 bg-zinc-900/50 p-1.5 rounded-2xl border border-zinc-800/50 w-fit">
+      {/* Author Tabs Navigation */}
+      <div className="flex flex-wrap items-center gap-1.5 mb-6 border-b border-zinc-900 pb-3">
         <button
           onClick={() => setSelectedAccountId('all')}
           className={cn(
-            "px-5 py-2 rounded-xl text-sm font-semibold transition-all duration-200",
+            "px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 flex items-center gap-1.5",
             selectedAccountId === 'all'
-              ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20"
-              : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+              ? "bg-zinc-900 text-zinc-100 shadow-sm"
+              : "text-zinc-500 hover:text-zinc-350"
           )}
         >
-          Все авторы
+          <span>Все авторы</span>
+          <span className="text-[10px] opacity-60 font-mono bg-zinc-950 px-1.5 py-0.5 rounded-md border border-zinc-900">
+            {state.books.length}
+          </span>
         </button>
-        {state.accounts.map((acc) => (
-          <button
-            key={acc.id}
-            onClick={() => setSelectedAccountId(acc.id)}
-            title={acc.name}
-            className={cn(
-              "px-5 py-2 rounded-xl text-sm font-semibold transition-all duration-200",
-              selectedAccountId === acc.id
-                ? "bg-zinc-100 text-zinc-950 shadow-lg shadow-black/20"
-                : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
-            )}
-          >
-            {acc.name.includes(':') ? acc.name.split(':')[0].trim() : acc.name}
-          </button>
-        ))}
+        {state.accounts.map((acc) => {
+          const count = state.books.filter(b => b.accountId === acc.id).length;
+          return (
+            <button
+              key={acc.id}
+              onClick={() => setSelectedAccountId(acc.id)}
+              title={acc.name}
+              className={cn(
+                "px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 flex items-center gap-1.5",
+                selectedAccountId === acc.id
+                  ? "bg-zinc-900 text-zinc-100 shadow-sm"
+                  : "text-zinc-500 hover:text-zinc-350"
+              )}
+            >
+              <span>{acc.name.includes(':') ? acc.name.split(':')[0].trim() : acc.name}</span>
+              <span className="text-[10px] opacity-60 font-mono bg-zinc-950 px-1.5 py-0.5 rounded-md border border-zinc-900">
+                {count}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
+      {/* Active Account Settings Header */}
+      {selectedAccountId !== 'all' && (() => {
+        const activeAcc = state.accounts.find(a => a.id === selectedAccountId);
+        if (!activeAcc) return null;
+        return (
+          <div className="flex items-center gap-3 mb-6 bg-zinc-900/10 border border-zinc-900/60 px-4 py-2 rounded-xl w-fit">
+            {editingAccountId === activeAcc.id ? (
+              <div className="flex items-center gap-2">
+                <input
+                  autoFocus
+                  value={editAccountName}
+                  onChange={(e) => setEditAccountName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSaveAccountName()}
+                  className="bg-zinc-950 text-xs font-semibold text-zinc-100 border border-emerald-500/30 rounded-lg px-2.5 py-1 outline-none"
+                />
+                <ColorInput
+                  value={editAccountColor}
+                  onChange={(val) => setEditAccountColor(val)}
+                  className="w-7 h-7 rounded cursor-pointer border-0 p-0 bg-transparent flex-shrink-0"
+                />
+                <button
+                  onClick={handleSaveAccountName}
+                  className="px-2.5 py-1 bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 border border-emerald-500/20 rounded-md text-[10px] font-semibold"
+                >
+                  ОК
+                </button>
+                <button
+                  onClick={() => setEditingAccountId(null)}
+                  className="px-2 py-1 text-zinc-400 hover:text-zinc-200 text-[10px]"
+                >
+                  Отмена
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: activeAcc.color || '#10b981' }} />
+                  <span className="text-xs font-bold text-zinc-300">{activeAcc.name}</span>
+                </div>
+                <div className="flex items-center gap-1 border-l border-zinc-900 pl-3 ml-1">
+                  <button
+                    onClick={() => handleStartEditAccount(activeAcc.id, activeAcc.name, activeAcc.color)}
+                    className="text-[10px] text-zinc-500 hover:text-emerald-400 transition-colors px-1.5 py-0.5 hover:bg-zinc-900/40 rounded"
+                  >
+                    Редактировать
+                  </button>
+                  <button
+                    onClick={() => {
+                      setConfirmModal({
+                        isOpen: true,
+                        title: 'Удалить аккаунт?',
+                        message: `Вы уверены, что хотите удалить аккаунт "${activeAcc.name}" и все его книги? Это действие необратимо.`,
+                        onConfirm: () => {
+                          deleteAccount(activeAcc.id);
+                          setSelectedAccountId('all');
+                        },
+                      });
+                    }}
+                    className="text-[10px] text-zinc-500 hover:text-red-400 transition-colors px-1.5 py-0.5 hover:bg-zinc-900/40 rounded"
+                  >
+                    Удалить
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Add Account Modal Overlay */}
       {isAddingAccount && (
-        <div className="mb-8 bg-zinc-900 p-6 rounded-2xl shadow-sm border border-zinc-800">
-          <h2 className="text-lg font-semibold text-emerald-50 mb-4">Добавить новый аккаунт / жанр</h2>
-          <form onSubmit={handleAddAccount} className="flex flex-col gap-4">
-            <div className="grid grid-cols-2 gap-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl w-full max-w-md shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-bold text-zinc-100">Новый аккаунт / жанр</h2>
+              <button onClick={() => setIsAddingAccount(false)} className="text-zinc-500 hover:text-zinc-300 p-1">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleAddAccount} className="flex flex-col gap-4">
               <div>
-                <label className="block text-sm font-medium text-zinc-200 mb-1">Название аккаунта</label>
+                <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Название аккаунта</label>
                 <input
                   type="text"
                   value={newAccountName}
                   onChange={(e) => setNewAccountName(e.target.value)}
-                  className="w-full px-4 py-2 border border-zinc-700 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none bg-zinc-950 text-zinc-100"
+                  className="w-full px-3.5 py-2 border border-zinc-800 focus:border-emerald-500/30 rounded-lg outline-none bg-zinc-950 text-zinc-100 text-sm focus:ring-1 focus:ring-emerald-500/10 transition-all"
                   placeholder="Например: Фэнтези..."
                   required
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-zinc-200 mb-1">Цвет аккаунта</label>
-                <div className="flex items-center gap-2 h-10">
-                  <input
-                    type="color"
+                <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Цвет аккаунта</label>
+                <div className="flex items-center gap-3">
+                  <ColorInput
                     value={newAccountColor}
-                    onChange={(e) => setNewAccountColor(e.target.value)}
-                    className="w-10 h-10 rounded cursor-pointer border-0 p-0"
+                    onChange={(val) => setNewAccountColor(val)}
+                    className="w-9 h-9 rounded cursor-pointer border border-zinc-800 p-0 bg-transparent"
                   />
-                  <span className="text-sm text-zinc-400">Цвет профиля</span>
+                  <span className="text-xs text-zinc-500">Цвет профиля</span>
                 </div>
               </div>
-            </div>
-            <div className="flex justify-end gap-3 mt-2">
-              <button
-                type="button"
-                onClick={() => setIsAddingAccount(false)}
-                className="px-4 py-2 text-zinc-300 hover:bg-zinc-800/50 rounded-lg font-medium transition-colors"
-              >
-                Отмена
-              </button>
-              <button
-                type="submit"
-                className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 transition-colors shadow-sm"
-              >
-                Сохранить
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {isAddingBook && (
-        <div className="mb-8 bg-zinc-900 p-6 rounded-2xl shadow-sm border border-zinc-800">
-          <h2 className="text-lg font-semibold text-emerald-50 mb-4">Добавить новую книгу</h2>
-          <form onSubmit={handleAddBook} className="flex flex-col gap-4">
-            <div>
-              <label className="block text-sm font-medium text-zinc-200 mb-1">Название книги</label>
-              <input
-                type="text"
-                value={newBookTitle}
-                onChange={(e) => setNewBookTitle(e.target.value)}
-                className="w-full px-4 py-2 border border-zinc-700 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none bg-zinc-950 text-zinc-100"
-                placeholder="Например: Академия магии..."
-                required
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-zinc-200 mb-1">Аккаунт / Жанр</label>
-                <select
-                  value={newBookAccount}
-                  onChange={(e) => setNewBookAccount(e.target.value)}
-                  className="w-full px-4 py-2 border border-zinc-700 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none bg-zinc-950 text-zinc-100"
-                  required
+              <div className="flex justify-end gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsAddingAccount(false)}
+                  className="px-4 py-2 text-xs font-semibold text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/80 rounded-lg transition-colors"
                 >
-                  {state.accounts.map((acc) => (
-                    <option key={acc.id} value={acc.id}>
-                      {acc.name}
-                    </option>
-                  ))}
-                </select>
+                  Отмена
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700 transition-colors shadow-sm"
+                >
+                  Сохранить
+                </button>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-200 mb-1">Цвет метки</label>
-                <div className="flex items-center gap-2 h-10">
-                  <input
-                    type="color"
-                    value={newBookColor}
-                    onChange={(e) => setNewBookColor(e.target.value)}
-                    className="w-10 h-10 rounded cursor-pointer border-0 p-0"
-                  />
-                  <span className="text-sm text-zinc-400">Для визуального разделения</span>
-                </div>
-              </div>
-            </div>
-            <div className="flex justify-end gap-3 mt-2">
-              <button
-                type="button"
-                onClick={() => setIsAddingBook(false)}
-                className="px-4 py-2 text-zinc-300 hover:bg-zinc-800/50 rounded-lg font-medium transition-colors"
-              >
-                Отмена
-              </button>
-              <button
-                type="submit"
-                className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 transition-colors shadow-sm"
-              >
-                Сохранить
-              </button>
-            </div>
-          </form>
+            </form>
+          </div>
         </div>
       )}
 
-      <div className="space-y-10">
-        {state.accounts
-          .filter(acc => selectedAccountId === 'all' || acc.id === selectedAccountId)
-          .map((account) => {
-            const idx = state.accounts.findIndex(a => a.id === account.id);
-            const accountBooks = state.books
-              .filter((b) => b.accountId === account.id)
-              .sort((a, b) => {
-                if (sortBy === 'title') return a.title.localeCompare(b.title);
-                if (sortBy === 'status') {
-                  const order = { 'PUBLISHED': 0, 'IN_PROGRESS': 1, 'PLANNED': 2 };
-                  return order[a.status] - order[b.status];
-                }
-                if (sortBy === 'chars') {
-                  const getChars = (id: string) => state.chapters.filter(c => c.bookId === id).reduce((sum, c) => sum + c.content.length, 0);
-                  return getChars(b.id) - getChars(a.id);
-                }
-                if (sortBy === 'chapters') {
-                  return state.chapters.filter(c => c.bookId === b.id).length - state.chapters.filter(c => c.bookId === a.id).length;
-                }
-                return 0;
-              });
-
-            return (
-              <div
-                key={account.id}
-                className={cn(
-                  "transition-all rounded-2xl border-2 border-transparent",
-                  dragOverIdx === idx && draggedIdx !== null && dragOverIdx !== draggedIdx
-                    ? dragOverIdx > draggedIdx ? "border-b-emerald-500 pb-4" : "border-t-emerald-500 pt-4"
-                    : "",
-                  draggedIdx === idx ? "opacity-30 border-dashed border-zinc-700" : ""
-                )}
-                draggable={selectedAccountId === 'all'}
-                onDragStart={(e) => handleDragStart(e, idx)}
-                onDragOver={(e) => handleDragOver(e, idx)}
-                onDragLeave={() => setDragOverIdx(null)}
-                onDrop={(e) => handleDrop(e, idx)}
-                onDragEnd={handleDragEnd}
-              >
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    {editingAccountId === account.id ? (
-                      <div className="flex items-center gap-2">
-                        <input
-                          autoFocus
-                          value={editAccountName}
-                          onChange={(e) => setEditAccountName(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              handleSaveAccountName();
-                            }
-                          }}
-                          className="bg-zinc-950 text-xl font-semibold text-zinc-100 border border-emerald-500 rounded px-2 outline-none py-1"
-                        />
-                        <input
-                          type="color"
-                          value={editAccountColor}
-                          onChange={(e) => setEditAccountColor(e.target.value)}
-                          className="w-8 h-8 rounded cursor-pointer border-0 p-0 bg-transparent flex-shrink-0"
-                          title="Выберите цвет профиля"
-                        />
-                        <button
-                          onClick={handleSaveAccountName}
-                          className="p-1.5 bg-emerald-600/20 text-emerald-500 hover:bg-emerald-600/30 rounded"
-                        >
-                          OK
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        {(account.color || accountBooks[0]?.color) && (
-                          <div
-                            className="w-4 h-4 rounded-full shadow-sm"
-                            style={{ backgroundColor: account.color || accountBooks[0]?.color || '#10b981' }}
-                          />
-                        )}
-                        <h2
-                          className="text-xl font-semibold text-zinc-100 cursor-pointer hover:text-emerald-400 transition-colors"
-                          onDoubleClick={() => handleStartEditAccount(account.id, account.name, account.color)}
-                        >
-                          {account.name.includes(':') ? account.name.split(':')[0].trim() : account.name}
-                        </h2>
-                      </div>
-                    )}
-                    <span className="px-2.5 py-0.5 bg-zinc-800/50 text-zinc-300 text-xs font-medium rounded-full">
-                      {accountBooks.length} книг
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={() => handleStartEditAccount(account.id, account.name, account.color)}
-                      className="text-zinc-500 hover:text-emerald-400 transition-colors p-2"
-                      title="Редактировать счет"
-                    >
-                      <Edit2 className="w-5 h-5" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        setConfirmModal({
-                          isOpen: true,
-                          title: 'Удалить аккаунт?',
-                          message: `Вы уверены, что хотите удалить аккаунт "${account.name}" и все его книги? Это действие необратимо.`,
-                          onConfirm: () => deleteAccount(account.id),
-                        });
-                      }}
-                      className="text-zinc-500 hover:text-red-500 transition-colors p-2"
-                      title="Удалить аккаунт"
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </button>
+      {/* Add Book Modal Overlay */}
+      {isAddingBook && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl w-full max-w-md shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-bold text-zinc-100">Добавить новую книгу</h2>
+              <button onClick={() => setIsAddingBook(false)} className="text-zinc-500 hover:text-zinc-300 p-1">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleAddBook} className="flex flex-col gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Название книги</label>
+                <input
+                  type="text"
+                  value={newBookTitle}
+                  onChange={(e) => setNewBookTitle(e.target.value)}
+                  className="w-full px-3.5 py-2 border border-zinc-800 focus:border-emerald-500/30 rounded-lg outline-none bg-zinc-950 text-zinc-100 text-sm focus:ring-1 focus:ring-emerald-500/10 transition-all"
+                  placeholder="Например: Академия магии..."
+                  required
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Аккаунт / Жанр</label>
+                  <select
+                    value={newBookAccount}
+                    onChange={(e) => { setNewBookAccount(e.target.value); setNewBookSeriesId(''); }}
+                    className="w-full px-3 py-2 border border-zinc-800 rounded-lg outline-none bg-zinc-950 text-zinc-100 text-sm focus:border-emerald-500/30 focus:ring-1 focus:ring-emerald-500/10 transition-all"
+                    required
+                  >
+                    {state.accounts.map((acc) => (
+                      <option key={acc.id} value={acc.id}>
+                        {acc.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Цвет метки</label>
+                  <div className="flex items-center gap-2">
+                    <ColorInput
+                      value={newBookColor}
+                      onChange={(val) => setNewBookColor(val)}
+                      className="w-9 h-9 rounded cursor-pointer border border-zinc-800 p-0 bg-transparent"
+                    />
+                    <span className="text-xs text-zinc-550">Для разделения</span>
                   </div>
                 </div>
-
-                {accountBooks.length === 0 ? (
-                  <div className="bg-zinc-950 border border-dashed border-zinc-700 rounded-2xl p-8 text-center">
-                    <BookPlus className="w-8 h-8 text-zinc-500 mx-auto mb-3" />
-                    <p className="text-zinc-400">В этом аккаунте пока нет книг.</p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Цикл / Серия</label>
+                {!isCreatingNewSeries ? (
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={newBookSeriesId}
+                      onChange={(e) => setNewBookSeriesId(e.target.value)}
+                      className="flex-1 px-3 py-2 border border-zinc-800 rounded-lg outline-none bg-zinc-950 text-zinc-100 text-sm focus:border-emerald-500/30 focus:ring-1 focus:ring-emerald-500/10 transition-all"
+                    >
+                      <option value="">Без цикла</option>
+                      {(state.series || []).filter(s => s.accountId === newBookAccount).map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => setIsCreatingNewSeries(true)}
+                      className="px-2.5 py-1.5 text-xs text-emerald-400 hover:bg-emerald-500/10 rounded-lg border border-emerald-500/20 font-semibold transition-colors"
+                    >
+                      + Новый
+                    </button>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {accountBooks.map((book) => {
-                      const chapters = state.chapters.filter(c => c.bookId === book.id);
-                      const publishedCount = chapters.filter(c => c.isPublished).length;
-
-                      return (
-                        <div
-                          key={book.id}
-                          onClick={() => onSelectBook(book.id)}
-                          className={cn(
-                            "bg-zinc-900 border rounded-xl hover:shadow-lg hover:border-emerald-500/20 transition-all cursor-pointer group relative overflow-hidden",
-                            statusBorderColors[book.status]
-                          )}
-                        >
-                          <div className="flex">
-                            {/* Cover — left side */}
-                            {book.coverPath ? (
-                              <div className="w-20 min-h-[100px] flex-shrink-0 bg-zinc-950 flex items-center justify-center overflow-hidden rounded-l-xl">
-                                <img
-                                  src={formatFilePath(book.coverPath)}
-                                  alt={book.title}
-                                  className="w-full h-full object-cover"
-                                  onError={(e) => (e.currentTarget.style.display = 'none')}
-                                />
-                              </div>
-                            ) : (
-                              <div className="w-20 min-h-[100px] flex-shrink-0 bg-zinc-950/50 flex items-center justify-center rounded-l-xl">
-                                <div
-                                  className="w-6 h-6 rounded-full opacity-40"
-                                  style={{ backgroundColor: book.color }}
-                                />
-                              </div>
-                            )}
-
-                            {/* Info — right side */}
-                            <div className="flex-1 p-3 flex flex-col justify-between min-w-0">
-                              <div>
-                                <div className="flex items-center justify-between mb-1">
-                                  <span
-                                    className={cn(
-                                      'px-1.5 py-0.5 text-[9px] font-bold rounded uppercase tracking-wider border',
-                                      statusColors[book.status]
-                                    )}
-                                  >
-                                    {statusLabels[book.status]}
-                                  </span>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setConfirmModal({
-                                        isOpen: true,
-                                        title: 'Удалить книгу?',
-                                        message: `Вы уверены, что хотите удалить книгу "${book.title}"? Все главы и данные будут потеряны.`,
-                                        onConfirm: () => deleteBook(book.id),
-                                      });
-                                    }}
-                                    className="text-zinc-600 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-0.5"
-                                    title="Удалить книгу"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                                <h3 className="text-sm font-bold text-zinc-100 line-clamp-1 group-hover:text-emerald-400 transition-colors">
-                                  {book.title}
-                                </h3>
-                              </div>
-
-                              <div className="flex items-center gap-3 text-[10px] text-zinc-500 mt-2">
-                                <span>Гл: {(() => {
-                                  if (!book.canvasContent) return chapters.length;
-                                  const t = document.createElement('div');
-                                  t.innerHTML = book.canvasContent;
-                                  return t.querySelectorAll('h2').length;
-                                })()}</span>
-                                <span>Симв: {(book.canvasContent
-                                  ? (() => { const t = document.createElement('div'); t.innerHTML = book.canvasContent; return (t.innerText || t.textContent || '').length; })()
-                                  : chapters.reduce((sum, c) => sum + c.content.length, 0)
-                                ).toLocaleString('ru-RU')}</span>
-                                <span className={publishedCount > 0 ? "text-emerald-500/70" : ""}>Опубл: {publishedCount}</span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={newSeriesName}
+                      onChange={(e) => setNewSeriesName(e.target.value)}
+                      className="flex-1 px-3.5 py-2 border border-zinc-800 focus:border-emerald-500/30 rounded-lg outline-none bg-zinc-950 text-zinc-100 text-sm focus:ring-1 focus:ring-emerald-500/10 transition-all"
+                      placeholder="Название нового цикла..."
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      onClick={() => { setIsCreatingNewSeries(false); setNewSeriesName(''); }}
+                      className="px-3 py-2 text-xs font-semibold text-zinc-400 hover:text-zinc-200 transition-colors"
+                    >
+                      Отмена
+                    </button>
                   </div>
                 )}
               </div>
-            );
-          })}
-      </div>
+              <div className="flex justify-end gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={() => { setIsAddingBook(false); setIsCreatingNewSeries(false); setNewSeriesName(''); }}
+                  className="px-4 py-2 text-xs font-semibold text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/80 rounded-lg transition-colors"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700 transition-colors shadow-sm"
+                >
+                  Сохранить
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Unified Book Grid */}
+      {(() => {
+        const filteredBooks = state.books
+          .filter((b) => selectedAccountId === 'all' || b.accountId === selectedAccountId)
+          .filter((b) => b.title.toLowerCase().includes(searchQuery.toLowerCase()))
+          .sort((a, b) => {
+            if (sortBy === 'date') return (b.createdAt || 0) - (a.createdAt || 0);
+            if (sortBy === 'title') return a.title.localeCompare(b.title);
+            if (sortBy === 'status') {
+              const order = { 'PUBLISHED': 0, 'IN_PROGRESS': 1, 'PLANNED': 2 };
+              return order[a.status] - order[b.status];
+            }
+            if (sortBy === 'chars') {
+              const getChars = (id: string) => state.chapters.filter(c => c.bookId === id).reduce((sum, c) => sum + c.content.length, 0);
+              return getChars(b.id) - getChars(a.id);
+            }
+            if (sortBy === 'chapters') {
+              return state.chapters.filter(c => c.bookId === b.id).length - state.chapters.filter(c => c.bookId === a.id).length;
+            }
+            return 0;
+          });
+
+        if (filteredBooks.length === 0) {
+          return (
+            <div className="bg-zinc-950/20 border border-dashed border-zinc-900 rounded-2xl p-12 text-center max-w-sm mx-auto mt-12 animate-in fade-in duration-300">
+              <BookPlus className="w-8 h-8 text-zinc-650 mx-auto mb-3" />
+              <p className="text-sm text-zinc-400 font-medium">Книг пока нет</p>
+              <p className="text-xs text-zinc-600 mt-1">
+                {searchQuery ? "Попробуйте изменить поисковый запрос." : "Нажмите «Новая книга», чтобы начать писать."}
+              </p>
+            </div>
+          );
+        }
+
+        return (
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+            {filteredBooks.map((book) => {
+              const chapters = state.chapters.filter(c => c.bookId === book.id);
+              const publishedCount = chapters.filter(c => c.isPublished).length;
+              const account = state.accounts.find(a => a.id === book.accountId);
+              const totalChaptersCount = book.canvasContent
+                ? (() => {
+                    const t = document.createElement('div');
+                    t.innerHTML = book.canvasContent;
+                    return t.querySelectorAll('h2').length;
+                  })()
+                : chapters.length;
+              const totalChars = book.canvasContent
+                ? (() => { const t = document.createElement('div'); t.innerHTML = book.canvasContent; return (t.innerText || t.textContent || '').length; })()
+                : chapters.reduce((sum, c) => sum + c.content.length, 0);
+              const isHovered = hoveredBookId === book.id;
+
+              return (
+                <div
+                  key={book.id}
+                  onClick={() => onSelectBook(book.id)}
+                  onMouseEnter={() => setHoveredBookId(book.id)}
+                  onMouseLeave={() => setHoveredBookId(null)}
+                  className="flex flex-col bg-zinc-900/15 border rounded-2xl transition-all duration-300 cursor-pointer group relative overflow-hidden h-[310px] hover:-translate-y-1.5 select-none"
+                  style={{
+                    borderColor: isHovered ? book.color : `${book.color}25`,
+                    boxShadow: isHovered ? `0 12px 30px -8px ${book.color}35` : 'none',
+                  }}
+                >
+                  {/* Cover Area (Aspect ratio container) */}
+                  <div className="relative h-44 w-full bg-zinc-950/40 flex items-center justify-center overflow-hidden border-b border-zinc-900/40">
+                    {/* Background Dynamic Radial Glow for Cards without covers */}
+                    {!book.coverPath && (
+                      <div 
+                        className="absolute inset-0 opacity-10 transition-opacity duration-300 group-hover:opacity-20"
+                        style={{
+                          background: `radial-gradient(circle at 50% 50%, ${book.color}, transparent 75%)`
+                        }}
+                      />
+                    )}
+
+                    {book.coverPath ? (
+                      <img
+                        src={book.coverPath}
+                        alt={book.title}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                        onError={(e) => (e.currentTarget.style.display = 'none')}
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center gap-2 z-10 transition-transform duration-300 group-hover:scale-105">
+                        <div 
+                          className="w-12 h-12 rounded-2xl flex items-center justify-center text-sm font-black border"
+                          style={{
+                            backgroundColor: `${book.color}15`,
+                            borderColor: `${book.color}40`,
+                            color: book.color
+                          }}
+                        >
+                          {getInitials(book.title)}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Status Badge (Top-left absolute) */}
+                    <span className={cn(
+                      "absolute top-3 left-3 text-[9px] font-extrabold px-2.5 py-0.5 rounded-full uppercase tracking-wider backdrop-blur-md border shadow-sm",
+                      book.status === 'PUBLISHED' ? 'text-emerald-450 bg-emerald-950/40 border-emerald-500/25' :
+                      book.status === 'IN_PROGRESS' ? 'text-amber-455 bg-amber-955/40 border-amber-500/25' : 
+                      'text-zinc-400 bg-zinc-950/45 border-zinc-800/25'
+                    )}>
+                      {statusLabels[book.status]}
+                    </span>
+
+                    {/* Delete action (Absolute hover overlay) */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmModal({
+                          isOpen: true,
+                          title: 'Удалить книгу?',
+                          message: `Вы уверены, что хотите удалить книгу "${book.title}"? Все главы и данные будут потеряны.`,
+                          onConfirm: () => deleteBook(book.id),
+                        });
+                      }}
+                      className="absolute top-3 right-3 p-1.5 bg-zinc-950/80 border border-zinc-800/60 text-zinc-500 hover:text-red-400 rounded-lg backdrop-blur-md opacity-0 group-hover:opacity-100 transition-all duration-200 shadow-sm"
+                      title="Удалить книгу"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Info Area */}
+                  <div className="flex-1 p-4 flex flex-col justify-between min-w-0">
+                    <div>
+                      {/* Account indicator */}
+                      {account && (
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: account.color || book.color }} />
+                          <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-wider truncate" title={account.name}>
+                            {account.name.includes(':') ? account.name.split(':')[0].trim() : account.name}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Book Title */}
+                      <h3 className="text-sm font-bold text-zinc-100 leading-snug line-clamp-1 transition-colors duration-250" style={{ color: isHovered ? book.color : undefined }}>
+                        {book.title}
+                      </h3>
+
+                      {/* Series */}
+                      {book.seriesId && (() => {
+                        const series = (state.series || []).find(s => s.id === book.seriesId);
+                        return series ? (
+                          <span className="flex items-center gap-1 text-[9px] text-indigo-400 font-semibold mt-1 truncate">
+                            <Layers className="w-2.5 h-2.5 text-indigo-500" />
+                            {series.name}
+                          </span>
+                        ) : null;
+                      })()}
+                    </div>
+
+                    {/* Stats footer */}
+                    <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-zinc-900/60">
+                      <div className="flex items-center gap-1 text-zinc-500">
+                        <FileText className="w-3.5 h-3.5 text-zinc-650" />
+                        <span className="text-xs font-semibold">{totalChaptersCount} гл.</span>
+                      </div>
+                      <span className="text-[11px] text-zinc-550 font-mono font-medium">
+                        {totalChars.toLocaleString('ru-RU')} зн.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       <ConfirmationModal
         isOpen={confirmModal.isOpen}
