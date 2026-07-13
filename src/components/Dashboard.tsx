@@ -10,6 +10,7 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
   const { state, addBook, addAccount, updateAccount, deleteAccount, deleteBook, reorderAccounts, addSeries } = useAppStore();
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
   const [editAccountName, setEditAccountName] = useState('');
+  
   const [isAddingBook, setIsAddingBook] = useState(false);
   const [newBookTitle, setNewBookTitle] = useState('');
   const [newBookAccount, setNewBookAccount] = useState(state.accounts[0]?.id || '');
@@ -17,6 +18,16 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
   const [newBookSeriesId, setNewBookSeriesId] = useState<string>('');
   const [newSeriesName, setNewSeriesName] = useState('');
   const [isCreatingNewSeries, setIsCreatingNewSeries] = useState(false);
+
+  const [isEditingBook, setIsEditingBook] = useState(false);
+  const [editingBookId, setEditingBookId] = useState<string | null>(null);
+  const [editBookTitle, setEditBookTitle] = useState('');
+  const [editBookAccount, setEditBookAccount] = useState('');
+  const [editBookColor, setEditBookColor] = useState('#6366f1');
+  const [editBookSeriesId, setEditBookSeriesId] = useState('');
+  const [editBookCoverPath, setEditBookCoverPath] = useState('');
+  const [isCreatingNewSeriesInEdit, setIsCreatingNewSeriesInEdit] = useState(false);
+  const [editNewSeriesName, setEditNewSeriesName] = useState('');
 
   const [isAddingAccount, setIsAddingAccount] = useState(false);
   const [newAccountName, setNewAccountName] = useState('');
@@ -128,6 +139,39 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
     const defaultAccount = selectedAccountId !== 'all' ? selectedAccountId : state.accounts[0].id;
     setNewBookAccount(defaultAccount);
     setIsAddingBook(true);
+  };
+
+  const handleOpenEditBook = (bookId: string) => {
+    const book = state.books.find(b => b.id === bookId);
+    if (!book) return;
+    setEditingBookId(bookId);
+    setEditBookTitle(book.title);
+    setEditBookAccount(book.accountId);
+    setEditBookColor(book.color || '#6366f1');
+    setEditBookSeriesId(book.seriesId || '');
+    setEditBookCoverPath(book.coverPath || '');
+    setIsCreatingNewSeriesInEdit(false);
+    setEditNewSeriesName('');
+    setIsEditingBook(true);
+  };
+
+  const handleSaveBookEdit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingBookId || !editBookTitle.trim() || !editBookAccount) return;
+    let seriesId = editBookSeriesId || undefined;
+    if (isCreatingNewSeriesInEdit && editNewSeriesName.trim()) {
+      addSeries({ accountId: editBookAccount, name: editNewSeriesName.trim() });
+      seriesId = undefined;
+    }
+    updateBook(editingBookId, {
+      title: editBookTitle.trim(),
+      accountId: editBookAccount,
+      color: editBookColor,
+      seriesId,
+      coverPath: editBookCoverPath.trim() || undefined
+    });
+    setIsEditingBook(false);
+    setEditingBookId(null);
   };
 
   const statusLabels: Record<BookStatus, string> = {
@@ -470,6 +514,127 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
         </div>
       )}
 
+      {/* Edit Book Modal Overlay */}
+      {isEditingBook && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-2xl w-full max-w-md shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-bold text-zinc-100">Редактировать книгу</h2>
+              <button onClick={() => { setIsEditingBook(false); setEditingBookId(null); }} className="text-zinc-500 hover:text-zinc-300 p-1">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveBookEdit} className="flex flex-col gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Название книги</label>
+                <input
+                  type="text"
+                  value={editBookTitle}
+                  onChange={(e) => setEditBookTitle(e.target.value)}
+                  className="w-full px-3.5 py-2 border border-zinc-800 focus:border-emerald-500/30 rounded-lg outline-none bg-zinc-950 text-zinc-100 text-sm focus:ring-1 focus:ring-emerald-500/10 transition-all"
+                  required
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Аккаунт / Жанр</label>
+                  <select
+                    value={editBookAccount}
+                    onChange={(e) => { setEditBookAccount(e.target.value); setEditBookSeriesId(''); }}
+                    className="w-full px-3 py-2 border border-zinc-800 rounded-lg outline-none bg-zinc-950 text-zinc-100 text-sm focus:border-emerald-500/30 focus:ring-1 focus:ring-emerald-500/10 transition-all"
+                    required
+                  >
+                    {state.accounts.map((acc) => (
+                      <option key={acc.id} value={acc.id}>
+                        {acc.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Цвет метки</label>
+                  <div className="flex items-center gap-2">
+                    <ColorInput
+                      value={editBookColor}
+                      onChange={(val) => setEditBookColor(val)}
+                      className="w-9 h-9 rounded cursor-pointer border border-zinc-800 p-0 bg-transparent"
+                    />
+                    <span className="text-xs text-zinc-550">Цвет обложки</span>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Ссылка на обложку (URL)</label>
+                <input
+                  type="text"
+                  value={editBookCoverPath}
+                  onChange={(e) => setEditBookCoverPath(e.target.value)}
+                  className="w-full px-3.5 py-2 border border-zinc-800 focus:border-emerald-500/30 rounded-lg outline-none bg-zinc-950 text-zinc-100 text-sm focus:ring-1 focus:ring-emerald-500/10 transition-all"
+                  placeholder="Например: https://site.com/image.jpg"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Цикл / Серия</label>
+                {!isCreatingNewSeriesInEdit ? (
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={editBookSeriesId}
+                      onChange={(e) => setEditBookSeriesId(e.target.value)}
+                      className="flex-1 px-3 py-2 border border-zinc-800 rounded-lg outline-none bg-zinc-950 text-zinc-100 text-sm focus:border-emerald-500/30 focus:ring-1 focus:ring-emerald-500/10 transition-all"
+                    >
+                      <option value="">Без цикла</option>
+                      {(state.series || []).filter(s => s.accountId === editBookAccount).map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => setIsCreatingNewSeriesInEdit(true)}
+                      className="px-2.5 py-1.5 text-xs text-emerald-400 hover:bg-emerald-500/10 rounded-lg border border-emerald-500/20 font-semibold transition-colors"
+                    >
+                      + Новый
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={editNewSeriesName}
+                      onChange={(e) => setEditNewSeriesName(e.target.value)}
+                      className="flex-1 px-3.5 py-2 border border-zinc-800 focus:border-emerald-500/30 rounded-lg outline-none bg-zinc-950 text-zinc-100 text-sm focus:ring-1 focus:ring-emerald-500/10 transition-all"
+                      placeholder="Название нового цикла..."
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      onClick={() => { setIsCreatingNewSeriesInEdit(false); setEditNewSeriesName(''); }}
+                      className="px-3 py-2 text-xs font-semibold text-zinc-400 hover:text-zinc-200 transition-colors"
+                    >
+                      Отмена
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-end gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={() => { setIsEditingBook(false); setEditingBookId(null); }}
+                  className="px-4 py-2 text-xs font-semibold text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/80 rounded-lg transition-colors"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700 transition-colors shadow-sm"
+                >
+                  Сохранить
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Unified Book Grid */}
       {(() => {
         const filteredBooks = state.books
@@ -577,6 +742,18 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
                     )}>
                       {statusLabels[book.status]}
                     </span>
+
+                    {/* Edit action (Absolute hover overlay) */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenEditBook(book.id);
+                      }}
+                      className="absolute top-3 right-11 p-1.5 bg-zinc-950/80 border border-zinc-800/60 text-zinc-500 hover:text-emerald-400 rounded-lg backdrop-blur-md opacity-0 group-hover:opacity-100 transition-all duration-200 shadow-sm"
+                      title="Редактировать книгу"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                    </button>
 
                     {/* Delete action (Absolute hover overlay) */}
                     <button

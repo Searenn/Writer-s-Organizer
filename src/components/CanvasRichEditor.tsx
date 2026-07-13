@@ -353,18 +353,16 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             canvasContentRef.current = storeHtml;
         }
 
-        // If store content changed externally, we need to reload even if editing
-        const needsReload = bookChanged || modeChanged || chapterChanged || refOutOfSync;
-
-        // If nothing navigation-related changed and content is in sync, don't reload
-        if (!needsReload && isEditing.current) return;
-
-        // If we are in 'all' mode and the only thing that changed was selectedChapterIndex
-        // (not content), we just update the ref and abort reloading so we don't destroy cursor position.
-        if (!bookChanged && !modeChanged && !refOutOfSync && viewMode === 'all') {
-            lastChapterIdx.current = selectedChapterIndex;
+        // If we are actively editing, NEVER reload the editor DOM content unless the book, viewMode, or active chapter changed.
+        // This prevents cursor resetting, double pastes, and undo/redo breaking.
+        const navigationChanged = bookChanged || modeChanged || chapterChanged;
+        if (isEditing.current && !navigationChanged) {
             return;
         }
+
+        // Otherwise, reload if book, mode, active chapter changed, or content is out of sync
+        const needsReload = navigationChanged || refOutOfSync;
+        if (!needsReload) return;
 
         // If switching chapter/mode while editing, force save first
         if (isEditing.current && (modeChanged || chapterChanged) && editorRef.current) {
@@ -744,50 +742,112 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     // Handle paste
     const handlePaste = (e: React.ClipboardEvent) => {
         e.preventDefault();
-        let html = e.clipboardData.getData('text/html');
+        const html = e.clipboardData.getData('text/html');
         const text = e.clipboardData.getData('text/plain');
 
-        if (html) {
-            // Remove MS Clipboard HTML header metadata if present
-            html = html.replace(/^[\s\S]*?<!--StartFragment-->/i, '');
-            html = html.replace(/<!--EndFragment-->[\s\S]*$/i, '');
+        const sel = window.getSelection();
+        if (!sel || !sel.rangeCount || !editorRef.current) return;
+        const range = sel.getRangeAt(0);
 
-            const temp = document.createElement('div');
-            temp.innerHTML = html;
+        // Find if we are currently inside an H2 heading
+        let heading: HTMLElement | null = null;
+        let current: Node | null = range.startContainer;
+        while (current && current !== editorRef.current) {
+            if (current instanceof HTMLElement && current.tagName === 'H2') {
+                heading = current;
+                break;
+            }
+            current = current.parentNode;
+        }
 
-            // Normalize all headings (h1-h6) to h2
-            temp.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(heading => {
-                const h2 = document.createElement('h2');
-                h2.innerHTML = heading.innerHTML;
-                heading.parentNode?.replaceChild(h2, heading);
-            });
+        if (heading) {
+            // We are inside an H2 heading.
+            // Only paste the first line inside the heading. Put subsequent lines as regular text below the heading.
+            const rawText = text || '';
+            const lines = rawText.split(/\r?\n/).map(l => l.trim());
+            const firstLine = lines[0] || '';
+            const otherLines = lines.slice(1).filter(l => l.length > 0 || lines.indexOf(l) !== 0); // Keep empty lines but clean up padding
 
-            // Convert paragraphs/spans to divs to avoid excessive margins
-            temp.querySelectorAll('p').forEach(p => {
-                const div = document.createElement('div');
-                div.innerHTML = p.innerHTML;
-                p.parentNode?.replaceChild(div, p);
-            });
+            // Paste first line inside H2 at cursor position
+            if (firstLine) {
+                document.execCommand('insertText', false, firstLine);
+            }
 
-            // Clean up styles
-            temp.querySelectorAll('*').forEach(el => {
-                el.removeAttribute('style');
-                el.removeAttribute('class');
-            });
+            // Paste other lines after H2 as regular divs
+            if (otherLines.length > 0) {
+                const cleanHtml = otherLines.map(line => {
+                    const trimmed = line.trim();
+                    return trimmed ? `<div>${escapeHtml(trimmed)}</div>` : '<div><br></div>';
+                }).join('');
 
-            // Remove empty divs
-            temp.querySelectorAll('div:empty').forEach(el => el.remove());
+                const afterRange = document.createRange();
+                afterRange.setStartAfter(heading);
+                afterRange.collapse(true);
 
-            document.execCommand('insertHTML', false, temp.innerHTML);
-        } else if (text) {
-            // Split plain text by newlines and wrap each line in a div
-            const textLines = text.split('\n');
-            const cleanHtml = textLines.map(line => {
-                const trimmed = line.trim();
-                return trimmed ? `<div>${escapeHtml(trimmed)}</div>` : '<div><br></div>';
-            }).join('');
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = cleanHtml;
 
-            document.execCommand('insertHTML', false, cleanHtml);
+                const fragment = document.createDocumentFragment();
+                while (tempDiv.firstChild) {
+                    fragment.appendChild(tempDiv.firstChild);
+                }
+
+                afterRange.insertNode(fragment);
+                
+                // Move selection/cursor to the end of the last inserted div
+                const lastInserted = fragment.lastChild || tempDiv.lastChild;
+                if (lastInserted) {
+                    const newSelRange = document.createRange();
+                    newSelRange.selectNodeContents(lastInserted);
+                    newSelRange.collapse(false);
+                    sel.removeAllRanges();
+                    sel.addRange(newSelRange);
+                }
+            }
+        } else {
+            // Not inside a heading. Paste normally.
+            if (html) {
+                // Remove MS Clipboard HTML header metadata if present
+                let cleanHtml = html.replace(/^[\s\S]*?<!--StartFragment-->/i, '');
+                cleanHtml = cleanHtml.replace(/<!--EndFragment-->[\s\S]*$/i, '');
+
+                const temp = document.createElement('div');
+                temp.innerHTML = cleanHtml;
+
+                // Normalize all headings (h1-h6) to h2
+                temp.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(h => {
+                    const h2 = document.createElement('h2');
+                    h2.innerHTML = h.innerHTML;
+                    h.parentNode?.replaceChild(h2, h);
+                });
+
+                // Convert paragraphs/spans to divs to avoid excessive margins
+                temp.querySelectorAll('p').forEach(p => {
+                    const div = document.createElement('div');
+                    div.innerHTML = p.innerHTML;
+                    p.parentNode?.replaceChild(div, p);
+                });
+
+                // Clean up styles
+                temp.querySelectorAll('*').forEach(el => {
+                    el.removeAttribute('style');
+                    el.removeAttribute('class');
+                });
+
+                // Remove empty divs
+                temp.querySelectorAll('div:empty').forEach(el => el.remove());
+
+                document.execCommand('insertHTML', false, temp.innerHTML);
+            } else if (text) {
+                // Split plain text by newlines and wrap each line in a div
+                const textLines = text.split(/\r?\n/);
+                const cleanHtml = textLines.map(line => {
+                    const trimmed = line.trim();
+                    return trimmed ? `<div>${escapeHtml(trimmed)}</div>` : '<div><br></div>';
+                }).join('');
+
+                document.execCommand('insertHTML', false, cleanHtml);
+            }
         }
 
         // Force save even when search is active — the search uses CSS Highlight API

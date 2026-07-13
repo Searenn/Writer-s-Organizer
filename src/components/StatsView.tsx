@@ -79,7 +79,7 @@ export const StatsView: React.FC = () => {
   const totalAllTime = (state.writingLogs || []).reduce((sum, l) => sum + l.count, 0);
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto h-full flex flex-col overflow-y-auto">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto flex flex-col">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-3xl font-bold text-emerald-50 tracking-tight flex items-center gap-3">
