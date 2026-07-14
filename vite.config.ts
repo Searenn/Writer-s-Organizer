@@ -4,6 +4,7 @@ import path from 'path';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  base: process.env.GH_PAGES === 'true' ? '/Writer-s-Organizer/' : '/',
   plugins: [
     react(),
     tailwindcss(),
