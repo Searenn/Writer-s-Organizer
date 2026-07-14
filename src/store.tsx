@@ -219,7 +219,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const { db } = await import('./lib/firebase');
         // Don't persist google tokens to cloud — they're short-lived
         const { googleTokens, ...stateToSave } = state;
-        const cleanState = JSON.parse(JSON.stringify(stateToSave));
+        let cleanState: any = null;
+        try {
+          cleanState = JSON.parse(JSON.stringify(stateToSave));
+        } catch (err: any) {
+          throw new Error(`Serialization: ${err.message}`);
+        }
 
         // Convert arrays containing nested arrays to maps to prevent Firestore "Property array contains an invalid nested entity" error
         if (Array.isArray(cleanState.books)) {
@@ -282,37 +287,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         
         let debugMsg = '';
         try {
-          const getInvalidFields = (val: any, path = ''): string[] => {
-            if (val === undefined) return [`${path} is undefined`];
-            if (val === null) return [];
-            if (typeof val === 'function') return [`${path} is a function`];
-            if (typeof val !== 'object') return [];
-            
-            const result: string[] = [];
-            if (Array.isArray(val)) {
-              val.forEach((item, index) => {
-                if (Array.isArray(item)) {
-                  result.push(`${path}[${index}] is a nested array`);
-                } else {
-                  result.push(...getInvalidFields(item, `${path}[${index}]`));
+          if (cleanState) {
+            const getInvalidFields = (val: any, path = ''): string[] => {
+              if (val === undefined) return [`${path} is undefined`];
+              if (val === null) return [];
+              if (typeof val === 'function') return [`${path} is a function`];
+              if (typeof val !== 'object') return [];
+              
+              const result: string[] = [];
+              if (Array.isArray(val)) {
+                val.forEach((item, index) => {
+                  if (Array.isArray(item)) {
+                    result.push(`${path}[${index}] is a nested array`);
+                  } else {
+                    result.push(...getInvalidFields(item, `${path}[${index}]`));
+                  }
+                });
+              } else {
+                const proto = Object.getPrototypeOf(val);
+                if (proto !== null && proto !== Object.prototype) {
+                  result.push(`${path} is a custom class (${proto.constructor?.name || 'unknown'})`);
+                  return result;
                 }
-              });
-            } else {
-              const proto = Object.getPrototypeOf(val);
-              if (proto !== null && proto !== Object.prototype) {
-                result.push(`${path} is a custom class (${proto.constructor?.name || 'unknown'})`);
-                return result;
+                Object.keys(val).forEach(key => {
+                  result.push(...getInvalidFields(val[key], path ? `${path}.${key}` : key));
+                });
               }
-              Object.keys(val).forEach(key => {
-                result.push(...getInvalidFields(val[key], path ? `${path}.${key}` : key));
-              });
+              return result;
+            };
+            
+            const invalidFields = getInvalidFields(cleanState);
+            if (invalidFields.length > 0) {
+              debugMsg = ` | Невалидные поля: ${invalidFields.slice(0, 5).join(', ')}`;
             }
-            return result;
-          };
-          
-          const invalidFields = getInvalidFields(cleanState);
-          if (invalidFields.length > 0) {
-            debugMsg = ` | Невалидные поля: ${invalidFields.slice(0, 5).join(', ')}`;
+          } else {
+            debugMsg = ` | Ошибка сериализации состояния`;
           }
         } catch (err) {
           debugMsg = ' | Ошибка при разборе отладки';
