@@ -288,7 +288,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         let debugMsg = '';
         try {
           if (cleanState) {
-            const getInvalidFields = (val: any, path = ''): string[] => {
+            const getInvalidFields = (val: any, insideArray = false, path = ''): string[] => {
               if (val === undefined) return [`${path} is undefined`];
               if (val === null) return [];
               if (typeof val === 'function') return [`${path} is a function`];
@@ -296,12 +296,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               
               const result: string[] = [];
               if (Array.isArray(val)) {
+                if (insideArray) {
+                  result.push(`${path} (nested array inside another array)`);
+                }
                 val.forEach((item, index) => {
-                  if (Array.isArray(item)) {
-                    result.push(`${path}[${index}] is a nested array`);
-                  } else {
-                    result.push(...getInvalidFields(item, `${path}[${index}]`));
-                  }
+                  result.push(...getInvalidFields(item, true, `${path}[${index}]`));
                 });
               } else {
                 const proto = Object.getPrototypeOf(val);
@@ -310,13 +309,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                   return result;
                 }
                 Object.keys(val).forEach(key => {
-                  result.push(...getInvalidFields(val[key], path ? `${path}.${key}` : key));
+                  result.push(...getInvalidFields(val[key], insideArray, path ? `${path}.${key}` : key));
                 });
               }
               return result;
             };
             
-            const invalidFields = getInvalidFields(cleanState);
+            const invalidFields = getInvalidFields(cleanState, false);
             if (invalidFields.length > 0) {
               debugMsg = ` | Невалидные поля: ${invalidFields.slice(0, 5).join(', ')}`;
             }
