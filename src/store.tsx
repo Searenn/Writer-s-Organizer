@@ -268,13 +268,57 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const nestedArrays = findNestedArrays(cleanState);
         if (nestedArrays.length > 0) {
           console.warn('CRITICAL: Nested arrays found in cleanState:', nestedArrays);
+          fetch('/api/debug-save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: 'nestedArrays', nestedArrays, cleanState })
+          }).catch(() => {});
         }
 
         await setDoc(doc(db, 'users', uid, 'data', 'main'), cleanState);
         setIsSaving(false);
       } catch (e: any) {
         console.error('Failed to save state to Firebase', e);
-        setSaveError(e.message || 'Ошибка сохранения');
+        
+        let debugMsg = '';
+        try {
+          const getInvalidFields = (val: any, path = ''): string[] => {
+            if (val === undefined) return [`${path} is undefined`];
+            if (val === null) return [];
+            if (typeof val === 'function') return [`${path} is a function`];
+            if (typeof val !== 'object') return [];
+            
+            const result: string[] = [];
+            if (Array.isArray(val)) {
+              val.forEach((item, index) => {
+                if (Array.isArray(item)) {
+                  result.push(`${path}[${index}] is a nested array`);
+                } else {
+                  result.push(...getInvalidFields(item, `${path}[${index}]`));
+                }
+              });
+            } else {
+              const proto = Object.getPrototypeOf(val);
+              if (proto !== null && proto !== Object.prototype) {
+                result.push(`${path} is a custom class (${proto.constructor?.name || 'unknown'})`);
+                return result;
+              }
+              Object.keys(val).forEach(key => {
+                result.push(...getInvalidFields(val[key], path ? `${path}.${key}` : key));
+              });
+            }
+            return result;
+          };
+          
+          const invalidFields = getInvalidFields(cleanState);
+          if (invalidFields.length > 0) {
+            debugMsg = ` | Невалидные поля: ${invalidFields.slice(0, 5).join(', ')}`;
+          }
+        } catch (err) {
+          debugMsg = ' | Ошибка при разборе отладки';
+        }
+
+        setSaveError(`${e.message || 'Ошибка сохранения'}${debugMsg}`);
         setIsSaving(false);
       }
     }, 2000); // 2 second debounce
