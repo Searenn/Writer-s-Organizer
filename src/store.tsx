@@ -323,8 +323,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           } else {
             debugMsg = ` | Ошибка сериализации состояния`;
           }
-        } catch (err) {
-          debugMsg = ' | Ошибка при разборе отладки';
+        } catch (err: any) {
+          debugMsg = ` | Ошибка при разборе отладки: ${err.message || err.toString()}`;
         }
 
         setSaveError(`${e.message || 'Ошибка сохранения'}${debugMsg}`);
