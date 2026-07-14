@@ -158,14 +158,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 else if (oldRow === 3) rowSpan = 9;
               }
 
-              return { ...item, colSpan, rowSpan };
+            return { ...item, colSpan, rowSpan };
             });
             moodBoardVersion = 2;
+          }
+
+          // Convert maps back to arrays if they were saved as maps (due to Firestore nested arrays constraint)
+          let books = parsed.books || [];
+          if (books && !Array.isArray(books)) {
+            books = Object.values(books);
+          }
+
+          let notes = parsed.notes || [];
+          if (notes && !Array.isArray(notes)) {
+            notes = Object.values(notes);
+          }
+
+          let scheduledTasks = parsed.scheduledTasks || [];
+          if (scheduledTasks && !Array.isArray(scheduledTasks)) {
+            scheduledTasks = Object.values(scheduledTasks);
           }
 
           setState({
             ...initialState,
             ...parsed,
+            books,
+            notes,
+            scheduledTasks,
             moodBoardItems,
             moodBoardVersion,
             kanbanTasks: parsed.kanbanTasks || [],
@@ -201,6 +220,56 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // Don't persist google tokens to cloud — they're short-lived
         const { googleTokens, ...stateToSave } = state;
         const cleanState = JSON.parse(JSON.stringify(stateToSave));
+
+        // Convert arrays containing nested arrays to maps to prevent Firestore "Property array contains an invalid nested entity" error
+        if (Array.isArray(cleanState.books)) {
+          const booksMap: Record<string, any> = {};
+          cleanState.books.forEach((book: any) => {
+            if (book.id) booksMap[book.id] = book;
+          });
+          cleanState.books = booksMap;
+        }
+
+        if (Array.isArray(cleanState.notes)) {
+          const notesMap: Record<string, any> = {};
+          cleanState.notes.forEach((note: any) => {
+            if (note.id) notesMap[note.id] = note;
+          });
+          cleanState.notes = notesMap;
+        }
+
+        if (Array.isArray(cleanState.scheduledTasks)) {
+          const tasksMap: Record<string, any> = {};
+          cleanState.scheduledTasks.forEach((task: any) => {
+            if (task.id) tasksMap[task.id] = task;
+          });
+          cleanState.scheduledTasks = tasksMap;
+        }
+
+        // Helper to find any nested arrays inside arrays
+        const findNestedArrays = (val: any, inArray = false, path = ''): string[] => {
+          if (!val || typeof val !== 'object') return [];
+          const result: string[] = [];
+          if (Array.isArray(val)) {
+            if (inArray) {
+              result.push(`${path} (nested array)`);
+            }
+            val.forEach((item, index) => {
+              result.push(...findNestedArrays(item, true, `${path}[${index}]`));
+            });
+          } else {
+            Object.keys(val).forEach(key => {
+              result.push(...findNestedArrays(val[key], inArray, path ? `${path}.${key}` : key));
+            });
+          }
+          return result;
+        };
+
+        const nestedArrays = findNestedArrays(cleanState);
+        if (nestedArrays.length > 0) {
+          console.warn('CRITICAL: Nested arrays found in cleanState:', nestedArrays);
+        }
+
         await setDoc(doc(db, 'users', uid, 'data', 'main'), cleanState);
         setIsSaving(false);
       } catch (e: any) {
