@@ -190,13 +190,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           
           // Merge book canvas contents and populate cache
           books = books.map((book: any) => {
-            const canvasContent = booksTextMap[book.id]?.canvasContent ?? book.canvasContent ?? '';
+            let canvasContent = booksTextMap[book.id]?.canvasContent ?? book.canvasContent ?? '';
+            let idx = 1;
+            while (booksTextMap[`${book.id}_canvas_${idx}`]) {
+              canvasContent += booksTextMap[`${book.id}_canvas_${idx}`].canvasContent || '';
+              idx++;
+            }
+
             const charactersCanvasContent = booksTextMap[book.id]?.charactersCanvasContent ?? book.charactersCanvasContent ?? '';
-            lastSavedTexts.current[`book_${book.id}`] = `${canvasContent}##${charactersCanvasContent}`;
+            const coverPath = booksTextMap[book.id]?.coverPath ?? book.coverPath;
+            
+            let chapterPlan = booksTextMap[book.id]?.chapterPlan ?? book.chapterPlan;
+            if (chapterPlan !== undefined) {
+              let pIdx = 1;
+              while (booksTextMap[`${book.id}_plan_${pIdx}`]) {
+                chapterPlan += booksTextMap[`${book.id}_plan_${pIdx}`].chapterPlan || '';
+                pIdx++;
+              }
+            }
+            
+            lastSavedTexts.current[`book_${book.id}`] = `${canvasContent}##${charactersCanvasContent}##${coverPath ?? ''}##${chapterPlan ?? ''}`;
             return {
               ...book,
               canvasContent,
-              charactersCanvasContent
+              charactersCanvasContent,
+              ...(coverPath !== undefined && { coverPath }),
+              ...(chapterPlan !== undefined && { chapterPlan })
             };
           });
 
@@ -212,7 +231,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           
           let chapters = parsed.chapters || [];
           chapters = chapters.map((chapter: any) => {
-            const content = chaptersTextMap[chapter.id]?.content ?? chapter.content ?? '';
+            let content = chaptersTextMap[chapter.id]?.content ?? chapter.content ?? '';
+            let cIdx = 1;
+            while (chaptersTextMap[`${chapter.id}_chunk_${cIdx}`]) {
+              content += chaptersTextMap[`${chapter.id}_chunk_${cIdx}`].content || '';
+              cIdx++;
+            }
+            
             lastSavedTexts.current[`chapter_${chapter.id}`] = content;
             return {
               ...chapter,
@@ -258,7 +283,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return;
         }
 
-        const { doc, setDoc } = await import('firebase/firestore');
+        const { doc, setDoc, deleteDoc } = await import('firebase/firestore');
         const { db } = await import('./lib/firebase');
         // Don't persist google tokens to cloud — they're short-lived
         const { googleTokens, ...stateToSave } = state;
@@ -293,6 +318,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           cleanState.scheduledTasks = tasksMap;
         }
 
+        const CHUNK_SIZE = 400000;
+        const getChunks = (str: string) => {
+          const chunks: string[] = [];
+          for (let i = 0; i < str.length; i += CHUNK_SIZE) {
+            chunks.push(str.substring(i, i + CHUNK_SIZE));
+          }
+          if (chunks.length === 0) chunks.push('');
+          return chunks;
+        };
+
         const savePromises: Promise<any>[] = [];
 
         // Save book canvas content separately to prevent exceeding Firestore 1MB document size limit
@@ -302,21 +337,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const book = booksMap[bookId];
             const canvasContent = book.canvasContent ?? '';
             const charactersCanvasContent = book.charactersCanvasContent ?? '';
+            const coverPath = book.coverPath ?? '';
+            const chapterPlan = book.chapterPlan ?? '';
             
             const bookKey = `book_${bookId}`;
-            const currentText = `${canvasContent}##${charactersCanvasContent}`;
+            const currentText = `${canvasContent}##${charactersCanvasContent}##${coverPath}##${chapterPlan}`;
             
             if (lastSavedTexts.current[bookKey] !== currentText) {
+              const canvasChunks = getChunks(canvasContent);
+              const chapterPlanChunks = getChunks(chapterPlan);
+
               savePromises.push(
-                setDoc(doc(db, 'users', uid, 'books', bookId), { canvasContent, charactersCanvasContent })
+                setDoc(doc(db, 'users', uid, 'books', bookId), { 
+                  canvasContent: canvasChunks[0], 
+                  charactersCanvasContent, 
+                  coverPath, 
+                  chapterPlan: chapterPlanChunks[0],
+                  canvasChunksCount: canvasChunks.length,
+                  chapterPlanChunksCount: chapterPlanChunks.length
+                })
                   .then(() => {
                     lastSavedTexts.current[bookKey] = currentText;
                   })
               );
+              
+              for (let i = 1; i < canvasChunks.length; i++) {
+                 savePromises.push(setDoc(doc(db, 'users', uid, 'books', `${bookId}_canvas_${i}`), { canvasContent: canvasChunks[i] }));
+              }
+              for (let i = canvasChunks.length; i < canvasChunks.length + 5; i++) {
+                 savePromises.push(deleteDoc(doc(db, 'users', uid, 'books', `${bookId}_canvas_${i}`)));
+              }
+
+              for (let i = 1; i < chapterPlanChunks.length; i++) {
+                 savePromises.push(setDoc(doc(db, 'users', uid, 'books', `${bookId}_plan_${i}`), { chapterPlan: chapterPlanChunks[i] }));
+              }
+              for (let i = chapterPlanChunks.length; i < chapterPlanChunks.length + 5; i++) {
+                 savePromises.push(deleteDoc(doc(db, 'users', uid, 'books', `${bookId}_plan_${i}`)));
+              }
             }
             
             delete book.canvasContent;
             delete book.charactersCanvasContent;
+            delete book.coverPath;
+            delete book.chapterPlan;
           });
         }
 
@@ -328,12 +391,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             
             const chapterKey = `chapter_${chapterId}`;
             if (lastSavedTexts.current[chapterKey] !== content) {
+              const chunks = getChunks(content);
+
               savePromises.push(
-                setDoc(doc(db, 'users', uid, 'chapters', chapterId), { content })
+                setDoc(doc(db, 'users', uid, 'chapters', chapterId), { 
+                  content: chunks[0],
+                  chunksCount: chunks.length
+                })
                   .then(() => {
                     lastSavedTexts.current[chapterKey] = content;
                   })
               );
+
+              for (let i = 1; i < chunks.length; i++) {
+                 savePromises.push(setDoc(doc(db, 'users', uid, 'chapters', `${chapterId}_chunk_${i}`), { content: chunks[i] }));
+              }
+              for (let i = chunks.length; i < chunks.length + 5; i++) {
+                 savePromises.push(deleteDoc(doc(db, 'users', uid, 'chapters', `${chapterId}_chunk_${i}`)));
+              }
             }
             
             delete chapter.content;
@@ -355,7 +430,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (cleanState) {
             const info = Object.keys(cleanState).map(key => {
               const val = cleanState[key];
-              let desc = typeof val;
+              let desc: string = typeof val;
               if (Array.isArray(val)) {
                 desc = `Array(${val.length})`;
                 const hasNested = val.some(item => {
@@ -371,7 +446,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                   const firstBook = val[bookKeys[0]];
                   const firstBookInfo = Object.keys(firstBook).map(bk => {
                     const bv = firstBook[bk];
-                    let bdesc = typeof bv;
+                    let bdesc: string = typeof bv;
                     if (Array.isArray(bv)) {
                       bdesc = `Array(${bv.length})`;
                     }
