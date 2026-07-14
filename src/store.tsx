@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { auth } from './lib/firebase';
 import { Account, AdBlock, AppState, AppTheme, Book, Chapter, Character, Credential, DailyEarning, EarningsEntry, FinanceGoal, GoogleTokens, KanbanTask, MoodBoardItem, Note, Platform, PomodoroSession, PomodoroSettings, Prompt, ScheduledTask, Series, Setting } from './types';
 import { generateId, getTextLength, getCanvasChaptersLength, getLocalISODate } from './utils';
@@ -112,6 +112,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const lastSavedTexts = useRef<Record<string, string>>({});
 
   // Load state on startup from Firebase — per user path: /users/{uid}/data/main
   useEffect(() => {
@@ -123,18 +124,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return;
         }
 
-        const { doc, getDoc, setDoc } = await import('firebase/firestore');
+        const { doc, getDoc, setDoc, collection, getDocs } = await import('firebase/firestore');
         const { db } = await import('./lib/firebase');
 
         const userDocRef = doc(db, 'users', uid, 'data', 'main');
-        const userDocSnap = await getDoc(userDocRef);
+        
+        // Fetch main data and subcollections in parallel
+        const [userDocSnap, booksSnap, chaptersSnap] = await Promise.all([
+          getDoc(userDocRef),
+          getDocs(collection(db, 'users', uid, 'books')).catch(() => null),
+          getDocs(collection(db, 'users', uid, 'chapters')).catch(() => null)
+        ]);
 
         let parsed: any = null;
-
         if (userDocSnap.exists()) {
           parsed = userDocSnap.data();
         }
 
+        const booksTextMap: Record<string, any> = {};
+        if (booksSnap) {
+          booksSnap.forEach(d => {
+            booksTextMap[d.id] = d.data();
+          });
+        }
+
+        const chaptersTextMap: Record<string, any> = {};
+        if (chaptersSnap) {
+          chaptersSnap.forEach(d => {
+            chaptersTextMap[d.id] = d.data();
+          });
+        }
 
         if (parsed) {
           let moodBoardItems = parsed.moodBoardItems || [];
@@ -168,6 +187,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (books && !Array.isArray(books)) {
             books = Object.values(books);
           }
+          
+          // Merge book canvas contents and populate cache
+          books = books.map((book: any) => {
+            const canvasContent = booksTextMap[book.id]?.canvasContent ?? book.canvasContent ?? '';
+            const charactersCanvasContent = booksTextMap[book.id]?.charactersCanvasContent ?? book.charactersCanvasContent ?? '';
+            lastSavedTexts.current[`book_${book.id}`] = `${canvasContent}##${charactersCanvasContent}`;
+            return {
+              ...book,
+              canvasContent,
+              charactersCanvasContent
+            };
+          });
 
           let notes = parsed.notes || [];
           if (notes && !Array.isArray(notes)) {
@@ -178,11 +209,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (scheduledTasks && !Array.isArray(scheduledTasks)) {
             scheduledTasks = Object.values(scheduledTasks);
           }
+          
+          let chapters = parsed.chapters || [];
+          chapters = chapters.map((chapter: any) => {
+            const content = chaptersTextMap[chapter.id]?.content ?? chapter.content ?? '';
+            lastSavedTexts.current[`chapter_${chapter.id}`] = content;
+            return {
+              ...chapter,
+              content
+            };
+          });
 
           setState({
             ...initialState,
             ...parsed,
             books,
+            chapters,
             notes,
             scheduledTasks,
             moodBoardItems,
@@ -251,36 +293,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           cleanState.scheduledTasks = tasksMap;
         }
 
-        // Helper to find any nested arrays inside arrays
-        const findNestedArrays = (val: any, inArray = false, path = ''): string[] => {
-          if (!val || typeof val !== 'object') return [];
-          const result: string[] = [];
-          if (Array.isArray(val)) {
-            if (inArray) {
-              result.push(`${path} (nested array)`);
-            }
-            val.forEach((item, index) => {
-              result.push(...findNestedArrays(item, true, `${path}[${index}]`));
-            });
-          } else {
-            Object.keys(val).forEach(key => {
-              result.push(...findNestedArrays(val[key], inArray, path ? `${path}.${key}` : key));
-            });
-          }
-          return result;
-        };
+        const savePromises: Promise<any>[] = [];
 
-        const nestedArrays = findNestedArrays(cleanState);
-        if (nestedArrays.length > 0) {
-          console.warn('CRITICAL: Nested arrays found in cleanState:', nestedArrays);
-          fetch('/api/debug-save', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ reason: 'nestedArrays', nestedArrays, cleanState })
-          }).catch(() => {});
+        // Save book canvas content separately to prevent exceeding Firestore 1MB document size limit
+        const booksMap = cleanState.books;
+        if (booksMap && typeof booksMap === 'object') {
+          Object.keys(booksMap).forEach(bookId => {
+            const book = booksMap[bookId];
+            const canvasContent = book.canvasContent ?? '';
+            const charactersCanvasContent = book.charactersCanvasContent ?? '';
+            
+            const bookKey = `book_${bookId}`;
+            const currentText = `${canvasContent}##${charactersCanvasContent}`;
+            
+            if (lastSavedTexts.current[bookKey] !== currentText) {
+              savePromises.push(
+                setDoc(doc(db, 'users', uid, 'books', bookId), { canvasContent, charactersCanvasContent })
+                  .then(() => {
+                    lastSavedTexts.current[bookKey] = currentText;
+                  })
+              );
+            }
+            
+            delete book.canvasContent;
+            delete book.charactersCanvasContent;
+          });
         }
 
-        await setDoc(doc(db, 'users', uid, 'data', 'main'), cleanState);
+        // Save chapter content separately to prevent exceeding Firestore 1MB document size limit
+        if (Array.isArray(cleanState.chapters)) {
+          cleanState.chapters.forEach((chapter: any) => {
+            const chapterId = chapter.id;
+            const content = chapter.content ?? '';
+            
+            const chapterKey = `chapter_${chapterId}`;
+            if (lastSavedTexts.current[chapterKey] !== content) {
+              savePromises.push(
+                setDoc(doc(db, 'users', uid, 'chapters', chapterId), { content })
+                  .then(() => {
+                    lastSavedTexts.current[chapterKey] = content;
+                  })
+              );
+            }
+            
+            delete chapter.content;
+          });
+        }
+
+        // Save main state document containing metadata
+        savePromises.push(
+          setDoc(doc(db, 'users', uid, 'data', 'main'), cleanState)
+        );
+
+        await Promise.all(savePromises);
         setIsSaving(false);
       } catch (e: any) {
         console.error('Failed to save state to Firebase', e);
