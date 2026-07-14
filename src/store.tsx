@@ -300,6 +300,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 if (hasNested) {
                   desc += ' [HAS NESTED ARRAY!]';
                 }
+              } else if (key === 'books' && val && typeof val === 'object') {
+                const bookKeys = Object.keys(val);
+                if (bookKeys.length > 0) {
+                  const firstBook = val[bookKeys[0]];
+                  const firstBookInfo = Object.keys(firstBook).map(bk => {
+                    const bv = firstBook[bk];
+                    let bdesc = typeof bv;
+                    if (Array.isArray(bv)) {
+                      bdesc = `Array(${bv.length})`;
+                    }
+                    return `${bk}:${bdesc}`;
+                  }).join(', ');
+                  desc = `Map(${bookKeys.length}) [FirstBook: ${firstBookInfo.slice(0, 200)}]`;
+                }
               }
               return `${key}:${desc}`;
             });
