@@ -208,6 +208,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSaveError(null);
 
     const timer = setTimeout(async () => {
+      let cleanState: any = null;
       try {
         const uid = auth.currentUser?.uid;
         if (!uid) {
@@ -219,7 +220,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const { db } = await import('./lib/firebase');
         // Don't persist google tokens to cloud — they're short-lived
         const { googleTokens, ...stateToSave } = state;
-        let cleanState: any = null;
         try {
           cleanState = JSON.parse(JSON.stringify(stateToSave));
         } catch (err: any) {
