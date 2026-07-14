@@ -288,37 +288,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         let debugMsg = '';
         try {
           if (cleanState) {
-            const getInvalidFields = (val: any, insideArray = false, path = ''): string[] => {
-              if (val === undefined) return [`${path} is undefined`];
-              if (val === null) return [];
-              if (typeof val === 'function') return [`${path} is a function`];
-              if (typeof val !== 'object') return [];
-              
-              const result: string[] = [];
+            const info = Object.keys(cleanState).map(key => {
+              const val = cleanState[key];
+              let desc = typeof val;
               if (Array.isArray(val)) {
-                if (insideArray) {
-                  result.push(`${path} (nested array inside another array)`);
-                }
-                val.forEach((item, index) => {
-                  result.push(...getInvalidFields(item, true, `${path}[${index}]`));
+                desc = `Array(${val.length})`;
+                const hasNested = val.some(item => {
+                  if (!item || typeof item !== 'object') return false;
+                  return Object.values(item).some(v => Array.isArray(v));
                 });
-              } else {
-                const proto = Object.getPrototypeOf(val);
-                if (proto !== null && proto !== Object.prototype) {
-                  result.push(`${path} is a custom class (${proto.constructor?.name || 'unknown'})`);
-                  return result;
+                if (hasNested) {
+                  desc += ' [HAS NESTED ARRAY!]';
                 }
-                Object.keys(val).forEach(key => {
-                  result.push(...getInvalidFields(val[key], insideArray, path ? `${path}.${key}` : key));
-                });
               }
-              return result;
-            };
-            
-            const invalidFields = getInvalidFields(cleanState, false);
-            if (invalidFields.length > 0) {
-              debugMsg = ` | Невалидные поля: ${invalidFields.slice(0, 5).join(', ')}`;
-            }
+              return `${key}:${desc}`;
+            });
+            debugMsg = ` | Состояние: ${info.join(', ')}`;
           } else {
             debugMsg = ` | Ошибка сериализации состояния`;
           }
