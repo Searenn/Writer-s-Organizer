@@ -912,18 +912,24 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             const currentHtml = editorRef.current.innerHTML;
 
             if (viewMode === 'all') {
-                updateBook(bookId, { canvasContent: currentHtml });
+                updateBook(bookId, { [contentField]: currentHtml });
                 canvasContentRef.current = currentHtml;
                 const parsed = parseChaptersFromElement(editorRef.current);
                 onChaptersChange(parsed);
+                if (contentType === 'characters') {
+                    syncCharactersFromHtml(bookId, currentHtml);
+                }
             } else if (viewMode === 'single' && selectedChapterIndex !== null) {
                 const fullHtml = canvasContentRef.current;
                 if (!fullHtml) return; // safety: no base content, skip
                 const newFullHtml = replaceChapterHtml(fullHtml, selectedChapterIndex, currentHtml);
-                updateBook(bookId, { canvasContent: newFullHtml });
+                updateBook(bookId, { [contentField]: newFullHtml });
                 canvasContentRef.current = newFullHtml;
                 const parsed = parseChaptersFromHtml(newFullHtml);
                 onChaptersChange(parsed);
+                if (contentType === 'characters') {
+                    syncCharactersFromHtml(bookId, newFullHtml);
+                }
 
                 if (wasHeading) {
                     // Heading removed → chapter merged into previous one.
