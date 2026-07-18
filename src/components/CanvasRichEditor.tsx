@@ -280,6 +280,22 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     const canvasContentRef = useRef<string>(book?.[contentField] || '');
     const [copiedType, setCopiedType] = useState<string | null>(null);
 
+    const [showToolbar, setShowToolbar] = useState(() => {
+        try {
+            return localStorage.getItem('pisaka-editor-toolbar-visible') !== 'false';
+        } catch {
+            return true;
+        }
+    });
+
+    const toggleToolbar = () => {
+        const newValue = !showToolbar;
+        setShowToolbar(newValue);
+        try {
+            localStorage.setItem('pisaka-editor-toolbar-visible', String(newValue));
+        } catch {}
+    };
+
     // Zoom font size via Ctrl + Wheel
     const [editorFontSize, setEditorFontSize] = useState(() => {
         try {
@@ -1142,8 +1158,8 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     };
 
     const handleCopyAll = () => {
-        if (!book?.canvasContent) return;
-        const htmlSnippet = book.canvasContent;
+        if (!book?.[contentField]) return;
+        const htmlSnippet = book[contentField];
         const text = getFormattedText(htmlSnippet);
         copyToClipboard(text, 'all', htmlSnippet);
     };
@@ -1382,14 +1398,32 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             )}
 
             {/* Toolbar */}
-            <div className="absolute top-4 right-10 z-20 flex gap-1 bg-zinc-900/90 py-1.5 px-2 rounded-xl border border-zinc-800/80 shadow-lg backdrop-blur-md flex-wrap items-center">
-                <button
-                    onClick={toggleHeading}
-                    className="flex items-center gap-1 px-2 py-1.5 text-zinc-300 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm font-medium"
-                    title="Заголовок (тогл)"
-                >
-                    <Heading className="w-4 h-4" />
-                </button>
+            <div className="absolute top-4 right-10 z-20 flex gap-1 bg-zinc-900/90 py-1.5 px-2 rounded-xl border border-zinc-800/80 shadow-lg backdrop-blur-md flex-wrap items-center transition-all duration-300">
+                {!showToolbar ? (
+                    <button
+                        onClick={toggleToolbar}
+                        className="flex items-center justify-center p-1.5 text-zinc-400 hover:text-emerald-400 rounded-lg transition-all"
+                        title="Показать панель форматирования"
+                    >
+                        <Type className="w-4 h-4" />
+                    </button>
+                ) : (
+                    <>
+                        <button
+                            onClick={toggleToolbar}
+                            className="flex items-center justify-center p-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all"
+                            title="Скрыть панель форматирования"
+                        >
+                            <ChevronRight className="w-4 h-4" />
+                        </button>
+                        <div className="w-px h-5 bg-zinc-800 self-center mx-0.5" />
+                        <button
+                            onClick={toggleHeading}
+                            className="flex items-center gap-1 px-2 py-1.5 text-zinc-300 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm font-medium"
+                            title="Заголовок (тогл)"
+                        >
+                            <Heading className="w-4 h-4" />
+                        </button>
                 <div className="w-px h-5 bg-zinc-800 self-center" />
                 <button
                     onClick={formatBold}
@@ -1607,6 +1641,8 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                             <><Copy className="w-4 h-4" /><span className="hidden sm:inline">Всё</span></>
                         )}
                     </button>
+                )}
+                    </>
                 )}
             </div>
 
