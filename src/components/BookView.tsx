@@ -1,5 +1,5 @@
 import { Calendar, Copy, Download, FileText, Settings, Users, Info, Tag, Palette } from 'lucide-react';
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useAppStore } from '../store';
 import { cn, canvasHtmlToPlainText, canvasHtmlToFb2, downloadFile } from '../utils';
 import { ChapterEditor } from './ChapterEditor';
@@ -25,10 +25,21 @@ export const BookView: React.FC<{
   const chapters = state.chapters.filter(c => c.bookId === book.id);
   const characters = state.characters.filter(c => c.bookId === book.id);
   const settings = state.settings.filter(s => s.bookId === book.id);
-  // Compute total chars from canvasContent if available, otherwise from legacy chapters
-  const totalChars = book.canvasContent
-    ? (() => { const t = document.createElement('div'); t.innerHTML = book.canvasContent; return (t.innerText || t.textContent || '').length; })()
-    : chapters.reduce((sum, c) => sum + c.content.length, 0);
+
+  // Efficiently compute total chars and chapter count using useMemo
+  const { totalChars, chapterCount } = useMemo(() => {
+    if (!book.canvasContent) {
+      return {
+        totalChars: chapters.reduce((sum, c) => sum + c.content.length, 0),
+        chapterCount: chapters.length,
+      };
+    }
+    const temp = document.createElement('div');
+    temp.innerHTML = book.canvasContent;
+    const chars = (temp.innerText || temp.textContent || '').length;
+    const count = temp.querySelectorAll('h2').length;
+    return { totalChars: chars, chapterCount: count };
+  }, [book.canvasContent, chapters]);
 
   const handleExportFile = (format: 'txt' | 'fb2') => {
     if (!book.canvasContent) return;
@@ -83,7 +94,7 @@ export const BookView: React.FC<{
     { id: 'chapters', label: 'Главы', icon: FileText },
     { id: 'schedule', label: 'Расписание', icon: Calendar },
     { id: 'ads', label: 'Реклама', icon: Tag },
-    { id: 'mood', label: 'Mood Board', icon: Palette },
+    { id: 'mood', label: 'Мудборд', icon: Palette },
   ] as const;
 
   return (
@@ -106,13 +117,7 @@ export const BookView: React.FC<{
             />
           </div>
           <span className="hidden sm:inline text-[10px] text-zinc-500 font-semibold tracking-wider shrink-0 mr-2 border-r border-zinc-900 pr-4">
-            {(() => {
-              if (!book.canvasContent) return `${chapters.length} гл`;
-              const t = document.createElement('div');
-              t.innerHTML = book.canvasContent;
-              const count = t.querySelectorAll('h2').length;
-              return `${count} гл`;
-            })()} • {totalChars.toLocaleString('ru-RU')} СИМВ.
+            {chapterCount} гл • {totalChars.toLocaleString('ru-RU')} СИМВ.
           </span>
 
           <div className="flex items-center gap-1 sm:gap-1.5 overflow-x-auto no-scrollbar">

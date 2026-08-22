@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
+import React, { createContext, useContext, useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { auth } from './lib/firebase';
 import { Account, AdBlock, AppState, AppTheme, Book, Chapter, Character, Credential, DailyEarning, EarningsEntry, FinanceGoal, GoogleTokens, KanbanTask, MoodBoardItem, Note, Platform, PomodoroSession, PomodoroSettings, Prompt, ScheduledTask, Series, Setting } from './types';
 import { generateId, getTextLength, getCanvasChaptersLength, getLocalISODate } from './utils';
@@ -703,7 +703,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const syncCanvasChapters = (bookId: string, headings: string[]) => {
+  const syncCanvasChapters = useCallback((bookId: string, headings: string[]) => {
     setState((s) => {
       const existingChapters = s.chapters.filter(c => c.bookId === bookId).sort((a, b) => a.order - b.order);
       const otherChapters = s.chapters.filter(c => c.bookId !== bookId);
@@ -778,9 +778,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         chapters: [...otherChapters, ...newChapters],
       };
     });
-  };
+  }, []);
 
-  const syncCharactersFromHtml = (bookId: string, html: string) => {
+  const syncCharactersFromHtml = useCallback((bookId: string, html: string) => {
     setState((s) => {
       const temp = document.createElement('div');
       temp.innerHTML = html;
@@ -844,7 +844,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         characters: [...otherChars, ...parsedCharacters]
       };
     });
-  };
+  }, []);
 
   const addCharacter = (character: Omit<Character, 'id'>) => {
     setState((s) => ({ ...s, characters: [...s.characters, { ...character, id: generateId() }] }));

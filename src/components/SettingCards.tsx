@@ -1,5 +1,5 @@
 import { Map, Plus, Trash2, Copy, CheckCircle2, Search } from 'lucide-react';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAppStore } from '../store';
 import { Setting } from '../types';
 import { cn } from '../utils';
@@ -7,7 +7,7 @@ import { ConfirmationModal } from './ConfirmationModal';
 
 export const SettingCards: React.FC<{ bookId: string }> = ({ bookId }) => {
   const { state, addSetting, updateSetting, deleteSetting } = useAppStore();
-  const settings = state.settings.filter((s) => s.bookId === bookId);
+  const settings = useMemo(() => state.settings.filter((s) => s.bookId === bookId), [state.settings, bookId]);
   const [selectedSettingId, setSelectedSettingId] = useState<string | null>(null);
   
   // Search query for locations

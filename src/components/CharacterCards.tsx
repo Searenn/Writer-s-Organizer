@@ -1,5 +1,5 @@
 import { Check, ClipboardCopy, Plus, Trash2, Users } from 'lucide-react';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAppStore } from '../store';
 import { Character } from '../types';
 import { cn } from '../utils';
@@ -7,7 +7,7 @@ import { ConfirmationModal } from './ConfirmationModal';
 
 export const CharacterCards: React.FC<{ bookId: string }> = ({ bookId }) => {
   const { state, addCharacter, updateCharacter, deleteCharacter } = useAppStore();
-  const characters = state.characters.filter((c) => c.bookId === bookId);
+  const characters = useMemo(() => state.characters.filter((c) => c.bookId === bookId), [state.characters, bookId]);
   const [selectedCharId, setSelectedCharId] = useState<string | null>(characters[0]?.id || null);
 
   const [confirmModal, setConfirmModal] = useState<{
