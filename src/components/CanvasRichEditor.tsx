@@ -1,5 +1,5 @@
 import { Bold, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, Copy, FileText, Heading, Highlighter, Italic, Replace, Search, Strikethrough, Type, Underline, X } from 'lucide-react';
-import React, { useCallback, useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
+import React, { useCallback, useEffect, useImperativeHandle, useRef, useState, forwardRef, useMemo } from 'react';
 import { useAppStore } from '../store';
 import { cn } from '../utils';
 import { format } from 'date-fns';
@@ -28,11 +28,60 @@ export type CanvasRichEditorHandle = {
 const HEADING_TAG = 'H2';
 const HEADING_SELECTOR = 'h2';
 
-/** Parse headings from an HTML string and return chapter descriptors */
+// ─── Fast regex-based chapter parsing (no DOM) ─────────────────────────────
+
+/** Strip HTML tags and decode common entities — pure string ops */
+function fastStripHtml(html: string): string {
+    let text = html.replace(/<br\s*\/?>/gi, '\n');
+    text = text.replace(/<[^>]*>/g, '');
+    text = text
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#039;/gi, "'")
+        .replace(/&apos;/gi, "'")
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
+        .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    return text;
+}
+
+/** Split full HTML into chapter HTML fragments by h2 headings */
+export function splitHtmlIntoChapters(html: string): string[] {
+    if (!html) return [];
+    // Split on <h2...> tags, keeping the delimiter
+    const parts = html.split(/(?=<h2[\s>])/i);
+    const chapters: string[] = [];
+    for (const part of parts) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        // Only include parts that start with an h2 heading
+        if (/^<h2[\s>]/i.test(trimmed)) {
+            chapters.push(trimmed);
+        } else if (chapters.length > 0) {
+            // Content after last chapter that doesn't start with h2 — append to last chapter
+            chapters[chapters.length - 1] += trimmed;
+        }
+        // Content before first h2 is discarded (or kept as preamble if needed)
+    }
+    return chapters;
+}
+
+/** Parse headings from an HTML string — fast regex version */
 export function parseChaptersFromHtml(html: string): CanvasChapter[] {
-    const temp = document.createElement('div');
-    temp.innerHTML = html;
-    return parseChaptersFromElement(temp);
+    const chapterHtmls = splitHtmlIntoChapters(html);
+    return chapterHtmls.map((chHtml, idx) => {
+        const titleMatch = chHtml.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
+        const title = titleMatch ? fastStripHtml(titleMatch[1]).trim() || 'Без названия' : 'Без названия';
+        const charCount = fastStripHtml(chHtml).length;
+        return {
+            id: `ch-${idx}`,
+            title,
+            level: 1,
+            charCount,
+        };
+    });
 }
 
 /** Parse headings from a live DOM element */
@@ -50,7 +99,6 @@ function parseChaptersFromElement(el: HTMLElement): CanvasChapter[] {
         if (nextHeading) {
             range.setEndBefore(nextHeading);
         } else {
-            // Select until the end of the root container
             range.setEnd(el, el.childNodes.length);
         }
 
@@ -70,139 +118,37 @@ function parseChaptersFromElement(el: HTMLElement): CanvasChapter[] {
 
 /** Extract the HTML fragment for a single chapter (heading + content until next heading) */
 function extractChapterHtml(fullHtml: string, chapterIndex: number): string {
-    const temp = document.createElement('div');
-    temp.innerHTML = fullHtml;
-    // Append to body temporarily so DOM operations work reliably
-    document.body.appendChild(temp);
-
-    try {
-        const headings = Array.from(temp.querySelectorAll(HEADING_SELECTOR));
-        if (chapterIndex < 0 || chapterIndex >= headings.length) return '';
-
-        const startHeading = headings[chapterIndex];
-        const nextHeading = headings[chapterIndex + 1] || null;
-
-        const range = document.createRange();
-        range.setStartBefore(startHeading);
-        if (nextHeading) {
-            range.setEndBefore(nextHeading);
-        } else {
-            range.setEnd(temp, temp.childNodes.length);
-        }
-
-        const fragment = range.cloneContents();
-        const wrapper = document.createElement('div');
-        wrapper.appendChild(fragment);
-        return wrapper.innerHTML;
-    } finally {
-        document.body.removeChild(temp);
-    }
+    const chapters = splitHtmlIntoChapters(fullHtml);
+    if (chapterIndex < 0 || chapterIndex >= chapters.length) return '';
+    return chapters[chapterIndex];
 }
 
 /** Replace the chapter's HTML in the full canvas content */
 function replaceChapterHtml(fullHtml: string, chapterIndex: number, newChapterHtml: string): string {
-    const temp = document.createElement('div');
-    temp.innerHTML = fullHtml;
-    // Append to body temporarily so DOM operations work reliably
-    document.body.appendChild(temp);
-
-    try {
-        const headings = Array.from(temp.querySelectorAll(HEADING_SELECTOR));
-        if (chapterIndex < 0 || chapterIndex >= headings.length) return fullHtml;
-
-        const startHeading = headings[chapterIndex];
-        const nextHeading = headings[chapterIndex + 1] || null;
-
-        const range = document.createRange();
-        range.setStartBefore(startHeading);
-        if (nextHeading) {
-            range.setEndBefore(nextHeading);
-        } else {
-            range.setEnd(temp, temp.childNodes.length);
-        }
-
-        range.deleteContents();
-
-        const newTemp = document.createElement('div');
-        newTemp.innerHTML = newChapterHtml;
-        const fragment = document.createDocumentFragment();
-        Array.from(newTemp.childNodes).forEach(n => fragment.appendChild(n));
-
-        range.insertNode(fragment);
-
-        return temp.innerHTML;
-    } finally {
-        document.body.removeChild(temp);
-    }
+    const chapters = splitHtmlIntoChapters(fullHtml);
+    if (chapterIndex < 0 || chapterIndex >= chapters.length) return fullHtml;
+    chapters[chapterIndex] = newChapterHtml;
+    return chapters.join('');
 }
 
 /** Reorder chapters: move chapter at fromIndex to toIndex */
 export function reorderChapterHtml(fullHtml: string, fromIndex: number, toIndex: number): string {
     if (fromIndex === toIndex) return fullHtml;
-
-    const temp = document.createElement('div');
-    temp.innerHTML = fullHtml;
-    document.body.appendChild(temp);
-
-    try {
-        const headings = Array.from(temp.querySelectorAll(HEADING_SELECTOR));
-        if (fromIndex < 0 || fromIndex >= headings.length || toIndex < 0 || toIndex >= headings.length) {
-            return fullHtml;
-        }
-
-        // Extract each chapter as an array of DOM nodes
-        const chapterFragments: DocumentFragment[] = [];
-        for (let i = 0; i < headings.length; i++) {
-            const range = document.createRange();
-            range.setStartBefore(headings[i]);
-            if (i + 1 < headings.length) {
-                range.setEndBefore(headings[i + 1]);
-            } else {
-                range.setEnd(temp, temp.childNodes.length);
-            }
-            chapterFragments.push(range.extractContents());
-        }
-
-        // Reorder
-        const [moved] = chapterFragments.splice(fromIndex, 1);
-        chapterFragments.splice(toIndex, 0, moved);
-
-        // Clear and rebuild
-        temp.innerHTML = '';
-        chapterFragments.forEach(f => temp.appendChild(f));
-
-        return temp.innerHTML;
-    } finally {
-        document.body.removeChild(temp);
+    const chapters = splitHtmlIntoChapters(fullHtml);
+    if (fromIndex < 0 || fromIndex >= chapters.length || toIndex < 0 || toIndex >= chapters.length) {
+        return fullHtml;
     }
+    const [moved] = chapters.splice(fromIndex, 1);
+    chapters.splice(toIndex, 0, moved);
+    return chapters.join('');
 }
 
 /** Delete a chapter/character fragment from HTML */
 export function deleteChapterHtml(fullHtml: string, chapterIndex: number): string {
-    const temp = document.createElement('div');
-    temp.innerHTML = fullHtml;
-    document.body.appendChild(temp);
-
-    try {
-        const headings = Array.from(temp.querySelectorAll(HEADING_SELECTOR));
-        if (chapterIndex < 0 || chapterIndex >= headings.length) return fullHtml;
-
-        const startHeading = headings[chapterIndex];
-        const nextHeading = headings[chapterIndex + 1] || null;
-
-        const range = document.createRange();
-        range.setStartBefore(startHeading);
-        if (nextHeading) {
-            range.setEndBefore(nextHeading);
-        } else {
-            range.setEnd(temp, temp.childNodes.length);
-        }
-
-        range.deleteContents();
-        return temp.innerHTML;
-    } finally {
-        document.body.removeChild(temp);
-    }
+    const chapters = splitHtmlIntoChapters(fullHtml);
+    if (chapterIndex < 0 || chapterIndex >= chapters.length) return fullHtml;
+    chapters.splice(chapterIndex, 1);
+    return chapters.join('');
 }
 
 /** Build initial HTML from legacy characters */
@@ -238,19 +184,16 @@ function escapeHtml(text: string): string {
 
 /**
  * Ensure chapter HTML keeps its heading. In single mode, if the user deletes
- * the heading, we must restore it to prevent chapter-index shifts that cause
- * cascading data corruption when switching chapters.
+ * the heading, we must restore it to prevent chapter-index shifts.
  */
 function ensureChapterHeading(chapterHtml: string, fullHtml: string, chapterIndex: number): string {
     const hasHeading = /<h[1-6][^>]*>/i.test(chapterHtml);
     if (hasHeading) return chapterHtml;
 
-    // Extract original heading text from the full HTML
     const originalChapter = extractChapterHtml(fullHtml, chapterIndex);
-    const match = originalChapter.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
+    const match = originalChapter.match(/<h2[^>]*>[\s\S]*?<\/h2>/i);
     const headingTag = match ? match[0] : '<h2>Без названия</h2>';
 
-    // If the remaining content is empty / just whitespace / just <br>, keep only the heading
     const stripped = chapterHtml.replace(/<br\s*\/?>/gi, '').replace(/<div>\s*<\/div>/gi, '').trim();
     if (!stripped) {
         return headingTag + '<div><br></div>';
@@ -258,6 +201,193 @@ function ensureChapterHeading(chapterHtml: string, fullHtml: string, chapterInde
 
     return headingTag + chapterHtml;
 }
+
+// ─── Virtualized Chapter Block ─────────────────────────────────────────────
+
+type VirtualChapterProps = {
+    index: number;
+    html: string;
+    isVisible: boolean;
+    cachedHeight: number | null;
+    editorFontSize: number;
+    editorFontFamily: string;
+    editorLineHeight: string;
+    headingStyles: string;
+    onInput: (index: number, html: string) => void;
+    onHeightMeasured: (index: number, height: number) => void;
+    onFocusRequest: (index: number, position: 'start' | 'end') => void;
+    onPaste: (e: React.ClipboardEvent, index: number) => void;
+    registerRef: (index: number, el: HTMLDivElement | null) => void;
+    observerRef: React.RefObject<IntersectionObserver | null>;
+};
+
+const VirtualChapterBlock = React.memo(forwardRef<HTMLDivElement, VirtualChapterProps>(({
+    index,
+    html,
+    isVisible,
+    cachedHeight,
+    editorFontSize,
+    editorFontFamily,
+    editorLineHeight,
+    headingStyles,
+    onInput,
+    onHeightMeasured,
+    onFocusRequest,
+    onPaste,
+    registerRef,
+    observerRef,
+}, _ref) => {
+    const containerRef = useRef<HTMLDivElement>(null);
+    const editorRef = useRef<HTMLDivElement>(null);
+    const isEditingRef = useRef(false);
+    const htmlRef = useRef(html);
+
+    // Update htmlRef when html prop changes (from external updates)
+    useEffect(() => {
+        htmlRef.current = html;
+    }, [html]);
+
+    // Observe this block for intersection
+    useEffect(() => {
+        const container = containerRef.current;
+        const observer = observerRef.current;
+        if (!container || !observer) return;
+        observer.observe(container);
+        return () => observer.unobserve(container);
+    }, [observerRef]);
+
+    // Set content when becoming visible or when html changes externally
+    useEffect(() => {
+        if (isVisible && editorRef.current) {
+            if (!isEditingRef.current) {
+                editorRef.current.innerHTML = html;
+            }
+            // Measure height after render
+            requestAnimationFrame(() => {
+                if (containerRef.current) {
+                    onHeightMeasured(index, containerRef.current.offsetHeight);
+                }
+            });
+        }
+    }, [isVisible, html, index, onHeightMeasured]);
+
+    // Register ref for parent access
+    useEffect(() => {
+        registerRef(index, editorRef.current);
+        return () => registerRef(index, null);
+    }, [index, registerRef]);
+
+    const handleInput = useCallback(() => {
+        isEditingRef.current = true;
+        if (editorRef.current) {
+            const newHtml = editorRef.current.innerHTML;
+            htmlRef.current = newHtml;
+            onInput(index, newHtml);
+        }
+        // Measure height after content change
+        requestAnimationFrame(() => {
+            if (containerRef.current) {
+                onHeightMeasured(index, containerRef.current.offsetHeight);
+            }
+        });
+    }, [index, onInput, onHeightMeasured]);
+
+    const handleBlur = useCallback(() => {
+        isEditingRef.current = false;
+    }, []);
+
+    const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (!editorRef.current) return;
+        const sel = window.getSelection();
+        if (!sel || !sel.rangeCount) return;
+        const range = sel.getRangeAt(0);
+
+        if (e.key === 'ArrowUp' || (e.key === 'ArrowLeft' && range.collapsed)) {
+            // Check if cursor is at the very start
+            const editorEl = editorRef.current;
+            const isAtStart = range.collapsed &&
+                range.startOffset === 0 &&
+                (range.startContainer === editorEl ||
+                 range.startContainer === editorEl.firstChild ||
+                 (range.startContainer.nodeType === Node.TEXT_NODE &&
+                  (range.startContainer.parentNode as Node | null) === editorEl.firstChild));
+
+            if (isAtStart && index > 0) {
+                e.preventDefault();
+                onFocusRequest(index - 1, 'end');
+            }
+        } else if (e.key === 'ArrowDown' || (e.key === 'ArrowRight' && range.collapsed)) {
+            // Check if cursor is at the very end
+            const editorEl = editorRef.current;
+            const lastChild = editorEl.lastChild;
+            const isAtEnd = range.collapsed && (
+                (range.startContainer === editorEl && range.startOffset === editorEl.childNodes.length) ||
+                (range.startContainer === lastChild && range.startOffset === (lastChild?.textContent?.length || 0)) ||
+                (range.startContainer.nodeType === Node.TEXT_NODE &&
+                 (range.startContainer.parentNode as Node | null) === lastChild &&
+                 range.startOffset === (range.startContainer.textContent?.length || 0))
+            );
+
+            if (isAtEnd) {
+                e.preventDefault();
+                onFocusRequest(index + 1, 'start');
+            }
+        }
+    }, [index, onFocusRequest]);
+
+    const handlePaste = useCallback((e: React.ClipboardEvent) => {
+        onPaste(e, index);
+        // Re-measure after paste
+        requestAnimationFrame(() => {
+            if (containerRef.current) {
+                onHeightMeasured(index, containerRef.current.offsetHeight);
+            }
+            if (editorRef.current) {
+                htmlRef.current = editorRef.current.innerHTML;
+                onInput(index, editorRef.current.innerHTML);
+            }
+        });
+    }, [index, onPaste, onHeightMeasured, onInput]);
+
+    if (!isVisible) {
+        return (
+            <div
+                ref={containerRef}
+                data-chapter-index={index}
+                style={{ height: cachedHeight ? `${cachedHeight}px` : '80px', minHeight: '40px' }}
+                className="bg-transparent"
+            />
+        );
+    }
+
+    return (
+        <div ref={containerRef} data-chapter-index={index}>
+            <div
+                ref={editorRef}
+                contentEditable
+                suppressContentEditableWarning
+                onInput={handleInput}
+                onBlur={handleBlur}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                style={{
+                    fontSize: `${editorFontSize}px`,
+                    fontFamily: editorFontFamily || 'inherit',
+                    lineHeight: editorLineHeight
+                }}
+                className={cn(
+                    "outline-none text-zinc-200 font-sans font-normal leading-relaxed text-base",
+                    headingStyles
+                )}
+                spellCheck={true}
+            />
+        </div>
+    );
+}));
+VirtualChapterBlock.displayName = 'VirtualChapterBlock';
+
+
+// ─── Main Editor Component ─────────────────────────────────────────────────
 
 export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ bookId, viewMode, selectedChapterIndex, onChaptersChange, onActiveChapterChange, contentType = 'chapters' }, ref) => {
     const { state, updateBook, syncCharactersFromHtml } = useAppStore();
@@ -271,7 +401,8 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         contentType === 'chapter_plan' ? 'chapterPlan' as const :
         'canvasContent' as const;
 
-    const editorRef = useRef<HTMLDivElement>(null);
+    // Single-mode editor ref (kept as before)
+    const singleEditorRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const isEditing = useRef(false);
     const lastBookId = useRef<string | null>(null);
@@ -279,6 +410,16 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     const lastChapterIdx = useRef<number | null>(null);
     const canvasContentRef = useRef<string>(book?.[contentField] || '');
     const [copiedType, setCopiedType] = useState<string | null>(null);
+
+    // ── Virtualized chapter state (all mode) ──────────────────────────────
+    const chapterHtmlsRef = useRef<string[]>([]);
+    const [chapterHtmls, setChapterHtmls] = useState<string[]>([]);
+    const [visibleChapters, setVisibleChapters] = useState<Set<number>>(new Set());
+    const chapterHeightsRef = useRef<Record<number, number>>({});
+    const chapterEditorRefs = useRef<Record<number, HTMLDivElement | null>>({});
+    const observerRef = useRef<IntersectionObserver | null>(null);
+    const saveTimeoutRef = useRef<any>(null);
+    const chapterDirtyRef = useRef<Set<number>>(new Set());
 
     const [showToolbar, setShowToolbar] = useState(() => {
         try {
@@ -347,50 +488,87 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     const [isReplaceMode, setIsReplaceMode] = useState(false);
     const replaceInputRef = useRef<HTMLInputElement>(null);
 
-    // Sync the ref whenever book.canvasContent or book.charactersCanvasContent changes
+    // Sync the ref whenever book content changes
     useEffect(() => {
         canvasContentRef.current = book?.[contentField] || '';
     }, [book?.[contentField], contentField]);
 
-    // Load content into the editor
+    // ── IntersectionObserver setup ──────────────────────────────────────────
     useEffect(() => {
-        if (!editorRef.current) return;
+        if (viewMode !== 'all') return;
 
+        const observer = new IntersectionObserver(
+            (entries) => {
+                setVisibleChapters(prev => {
+                    const next = new Set(prev);
+                    for (const entry of entries) {
+                        const el = entry.target as HTMLElement;
+                        const idx = parseInt(el.dataset.chapterIndex || '-1', 10);
+                        if (idx < 0) continue;
+                        if (entry.isIntersecting) {
+                            next.add(idx);
+                        } else {
+                            next.delete(idx);
+                        }
+                    }
+                    // Check if sets are equal to avoid unnecessary re-renders
+                    if (next.size === prev.size && [...next].every(v => prev.has(v))) {
+                        return prev;
+                    }
+                    return next;
+                });
+            },
+            {
+                root: scrollContainerRef.current,
+                rootMargin: '1200px 0px', // Pre-load chapters 1200px above/below viewport
+                threshold: 0,
+            }
+        );
+
+        observerRef.current = observer;
+        return () => {
+            observer.disconnect();
+            observerRef.current = null;
+        };
+    }, [viewMode, bookId]);
+
+    // ── Load content into editor ──────────────────────────────────────────
+    useEffect(() => {
         const bookChanged = lastBookId.current !== bookId;
         const modeChanged = lastViewMode.current !== viewMode;
-        // In 'all' mode, changing chapter index via sidebar does not change what should be in the editor
         const chapterChanged = viewMode === 'single' ? lastChapterIdx.current !== selectedChapterIndex : false;
 
-        // Always sync ref from store — external changes (handleAddChapter etc.) may
-        // have updated canvasContent without going through saveToStore.
+        // Sync ref from store
         const storeHtml = book?.[contentField] || '';
         const refOutOfSync = canvasContentRef.current !== storeHtml;
         if (refOutOfSync) {
             canvasContentRef.current = storeHtml;
         }
 
-        // If we are actively editing, NEVER reload the editor DOM content unless the book, viewMode, or active chapter changed.
-        // This prevents cursor resetting, double pastes, and undo/redo breaking.
         const navigationChanged = bookChanged || modeChanged || chapterChanged;
+
+        // If actively editing and no navigation change, skip reload
         if (isEditing.current && !navigationChanged) {
             return;
         }
 
-        // Otherwise, reload if book, mode, active chapter changed, or content is out of sync
         const needsReload = navigationChanged || refOutOfSync;
         if (!needsReload) return;
 
-        // If switching chapter/mode while editing, force save first
-        if (isEditing.current && (modeChanged || chapterChanged) && editorRef.current) {
-            const currentHtml = editorRef.current.innerHTML;
+        // Force save before switching if editing
+        if (isEditing.current && (modeChanged || chapterChanged)) {
             if (lastViewMode.current === 'all') {
-                updateBook(bookId, { [contentField]: currentHtml });
-                canvasContentRef.current = currentHtml;
-                if (contentType === 'characters') {
-                    syncCharactersFromHtml(bookId, currentHtml);
+                // In all mode, assemble from chapter htmls
+                const assembledHtml = chapterHtmlsRef.current.join('');
+                if (assembledHtml) {
+                    updateBook(bookId, { [contentField]: assembledHtml });
+                    canvasContentRef.current = assembledHtml;
+                    if (contentType === 'characters') {
+                        syncCharactersFromHtml(bookId, assembledHtml);
+                    }
                 }
-            } else if (lastViewMode.current === 'single' && lastChapterIdx.current !== null) {
-                // Always use store value as base for single-mode saves
+            } else if (lastViewMode.current === 'single' && lastChapterIdx.current !== null && singleEditorRef.current) {
+                const currentHtml = singleEditorRef.current.innerHTML;
                 const fullHtml = book?.[contentField] || canvasContentRef.current;
                 if (fullHtml) {
                     const safeHtml = ensureChapterHeading(currentHtml, fullHtml, lastChapterIdx.current);
@@ -411,7 +589,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
         let html = canvasContentRef.current;
 
-        // Migration: if no content but has legacy data, migrate from them
+        // Migration: if no content but has legacy data, migrate
         if (!html) {
             if (contentType === 'characters') {
                 const legacyChars = state.characters.filter(c => c.bookId === bookId);
@@ -430,11 +608,17 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         }
 
         if (viewMode === 'all') {
-            editorRef.current.innerHTML = html;
-        } else if (viewMode === 'single' && selectedChapterIndex !== null) {
-            editorRef.current.innerHTML = extractChapterHtml(html, selectedChapterIndex);
-        } else {
-            editorRef.current.innerHTML = '';
+            // Split into chapter fragments for virtualized rendering
+            const splitChapters = splitHtmlIntoChapters(html);
+            chapterHtmlsRef.current = splitChapters;
+            setChapterHtmls(splitChapters);
+            chapterDirtyRef.current.clear();
+            // Reset visibility for new content
+            setVisibleChapters(new Set());
+        } else if (viewMode === 'single' && selectedChapterIndex !== null && singleEditorRef.current) {
+            singleEditorRef.current.innerHTML = extractChapterHtml(html, selectedChapterIndex);
+        } else if (singleEditorRef.current) {
+            singleEditorRef.current.innerHTML = '';
         }
 
         // Parse & report chapters
@@ -442,23 +626,14 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         onChaptersChange(parsed);
     }, [bookId, viewMode, selectedChapterIndex, book?.[contentField], contentType]);
 
-    const saveToStore = useCallback(() => {
-        if (!editorRef.current) return;
-        // Don't save during search — search highlights alter the DOM temporarily
+    // ── Save to store (single mode) ─────────────────────────────────────────
+    const saveToStoreSingle = useCallback(() => {
+        if (!singleEditorRef.current) return;
         if (isSearchActive.current) return;
 
-        const currentHtml = editorRef.current.innerHTML;
+        const currentHtml = singleEditorRef.current.innerHTML;
 
-        if (viewMode === 'all') {
-            updateBook(bookId, { [contentField]: currentHtml });
-            canvasContentRef.current = currentHtml;
-            const parsed = parseChaptersFromElement(editorRef.current);
-            onChaptersChange(parsed);
-            if (contentType === 'characters') {
-                syncCharactersFromHtml(bookId, currentHtml);
-            }
-        } else if (viewMode === 'single' && selectedChapterIndex !== null) {
-            // ALWAYS use the store's latest content as base
+        if (viewMode === 'single' && selectedChapterIndex !== null) {
             const fullHtml = book?.[contentField] || canvasContentRef.current || '';
             if (!fullHtml) return;
             const safeHtml = ensureChapterHeading(currentHtml, fullHtml, selectedChapterIndex);
@@ -471,30 +646,102 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                 syncCharactersFromHtml(bookId, newFullHtml);
             }
         }
-
-        // Do not force isEditing to false. It will be reset onBlur. 
-        // This prevents race conditions where React re-renders while typing.
     }, [bookId, viewMode, selectedChapterIndex, book?.[contentField], updateBook, onChaptersChange, contentType, contentField, syncCharactersFromHtml]);
 
-    // Keep a ref to saveToStore so the debounced handler always calls the latest version
-    const saveToStoreRef = useRef(saveToStore);
-    useEffect(() => { saveToStoreRef.current = saveToStore; }, [saveToStore]);
+    const saveToStoreSingleRef = useRef(saveToStoreSingle);
+    useEffect(() => { saveToStoreSingleRef.current = saveToStoreSingle; }, [saveToStoreSingle]);
 
-    // ── Autoformat: << → «, >> → », -- → — ──────────────────────────────
-    const autoformatRef = useRef(false); // flag to skip input handler re-trigger
+    // ── Save to store (all mode — virtualized) ────────────────────────────
+    const saveToStoreAll = useCallback(() => {
+        if (isSearchActive.current) return;
+
+        // Update dirty chapters from their DOM refs
+        for (const idx of chapterDirtyRef.current) {
+            const el = chapterEditorRefs.current[idx];
+            if (el) {
+                chapterHtmlsRef.current[idx] = el.innerHTML;
+            }
+        }
+        chapterDirtyRef.current.clear();
+
+        const assembledHtml = chapterHtmlsRef.current.join('');
+        updateBook(bookId, { [contentField]: assembledHtml });
+        canvasContentRef.current = assembledHtml;
+        const parsed = parseChaptersFromHtml(assembledHtml);
+        onChaptersChange(parsed);
+        if (contentType === 'characters') {
+            syncCharactersFromHtml(bookId, assembledHtml);
+        }
+    }, [bookId, updateBook, onChaptersChange, contentType, contentField, syncCharactersFromHtml]);
+
+    const saveToStoreAllRef = useRef(saveToStoreAll);
+    useEffect(() => { saveToStoreAllRef.current = saveToStoreAll; }, [saveToStoreAll]);
+
+    // ── Chapter input handler (all mode) ──────────────────────────────────
+    const handleChapterInput = useCallback((index: number, html: string) => {
+        chapterHtmlsRef.current[index] = html;
+        chapterDirtyRef.current.add(index);
+        isEditing.current = true;
+
+        clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = setTimeout(() => {
+            if (typeof requestIdleCallback !== 'undefined') {
+                requestIdleCallback(() => saveToStoreAllRef.current(), { timeout: 3000 });
+            } else {
+                saveToStoreAllRef.current();
+            }
+        }, 1500); // Increased debounce for all mode
+    }, []);
+
+    // ── Chapter height tracking ──────────────────────────────────────────
+    const handleHeightMeasured = useCallback((index: number, height: number) => {
+        chapterHeightsRef.current[index] = height;
+    }, []);
+
+    // ── Focus request between chapters ──────────────────────────────────
+    const handleFocusRequest = useCallback((targetIndex: number, position: 'start' | 'end') => {
+        const el = chapterEditorRefs.current[targetIndex];
+        if (!el) return;
+        el.focus();
+        const sel = window.getSelection();
+        if (!sel) return;
+        const range = document.createRange();
+        if (position === 'start') {
+            range.selectNodeContents(el);
+            range.collapse(true);
+        } else {
+            range.selectNodeContents(el);
+            range.collapse(false);
+        }
+        sel.removeAllRanges();
+        sel.addRange(range);
+    }, []);
+
+    // ── Register chapter editor refs ──────────────────────────────────────
+    const registerChapterRef = useCallback((index: number, el: HTMLDivElement | null) => {
+        if (el) {
+            chapterEditorRefs.current[index] = el;
+        } else {
+            delete chapterEditorRefs.current[index];
+        }
+    }, []);
+
+    // ── Autoformat handler (shared) ──────────────────────────────────────
+    const autoformatRef = useRef(false);
     useEffect(() => {
-        const editor = editorRef.current;
-        if (!editor) return;
+        const container = scrollContainerRef.current;
+        if (!container) return;
 
         const REPLACEMENTS: [string, string][] = [
-            ['<<', '«'],
-            ['>>', '»'],
-            ['--', '—'],
+            ['<<', '\u00AB'],
+            ['>>', '\u00BB'],
+            ['--', '\u2014'],
         ];
 
-        const handleAutoformat = (e: InputEvent) => {
+        const handleAutoformat = (e: Event) => {
+            const inputEvent = e as InputEvent;
             if (autoformatRef.current) { autoformatRef.current = false; return; }
-            if (e.inputType !== 'insertText' || !e.data) return;
+            if (inputEvent.inputType !== 'insertText' || !inputEvent.data) return;
 
             const sel = window.getSelection();
             if (!sel || !sel.rangeCount) return;
@@ -507,13 +754,11 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
             for (const [trigger, replacement] of REPLACEMENTS) {
                 if (offset >= trigger.length && text.substring(offset - trigger.length, offset) === trigger) {
-                    // Replace the trigger with the typographic character
                     autoformatRef.current = true;
                     const before = text.substring(0, offset - trigger.length);
                     const after = text.substring(offset);
                     node.textContent = before + replacement + after;
 
-                    // Restore cursor position
                     const newRange = document.createRange();
                     newRange.setStart(node, before.length + replacement.length);
                     newRange.collapse(true);
@@ -524,13 +769,14 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             }
         };
 
-        editor.addEventListener('input', handleAutoformat as EventListener);
-        return () => editor.removeEventListener('input', handleAutoformat as EventListener);
+        container.addEventListener('input', handleAutoformat);
+        return () => container.removeEventListener('input', handleAutoformat);
     }, [bookId]);
 
-    // Debounced input handler — installed ONCE per editor mount, uses ref for stability
+    // ── Debounced input handler for single mode ──────────────────────────
     useEffect(() => {
-        const editor = editorRef.current;
+        if (viewMode !== 'single') return;
+        const editor = singleEditorRef.current;
         if (!editor) return;
 
         let timeoutId: any;
@@ -539,7 +785,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             isEditing.current = true;
             clearTimeout(timeoutId);
             timeoutId = setTimeout(() => {
-                saveToStoreRef.current();
+                saveToStoreSingleRef.current();
             }, 800);
         };
 
@@ -548,11 +794,10 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             editor.removeEventListener('input', handleInput);
             clearTimeout(timeoutId);
         };
-    }, [bookId]); // Only reinstall when book changes
+    }, [bookId, viewMode]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            // Use e.code instead of e.key for layout independence (KeyF works on any layout)
             if ((e.ctrlKey || e.metaKey) && e.code === 'KeyF') {
                 e.preventDefault();
                 setIsReplaceMode(false);
@@ -572,11 +817,26 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [isSearchOpen]);
 
+    // ── Search — works across all visible chapter editors ──────────────────
+    const getAllEditorRoots = useCallback((): HTMLElement[] => {
+        if (viewMode === 'all') {
+            const roots: HTMLElement[] = [];
+            const count = chapterHtmlsRef.current.length;
+            for (let i = 0; i < count; i++) {
+                const el = chapterEditorRefs.current[i];
+                if (el) roots.push(el);
+            }
+            return roots;
+        } else if (singleEditorRef.current) {
+            return [singleEditorRef.current];
+        }
+        return [];
+    }, [viewMode]);
+
     const handleSearch = (text: string, jump: boolean = true, forward: boolean = true) => {
         isSearchActive.current = true;
         setSearchText(text);
 
-        // Clear previous highlights
         if ((CSS as any).highlights) {
             (CSS as any).highlights.delete('search-match');
             (CSS as any).highlights.delete('search-active');
@@ -588,30 +848,32 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             return;
         }
 
-        if (!editorRef.current) return;
+        const editorRoots = getAllEditorRoots();
+        if (editorRoots.length === 0) return;
 
-        // Find all matches using TreeWalker for robust range creation
         const ranges: Range[] = [];
-        const treeWalker = document.createTreeWalker(editorRef.current, NodeFilter.SHOW_TEXT);
-        let currentNode = treeWalker.nextNode();
+        for (const root of editorRoots) {
+            const treeWalker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+            let currentNode = treeWalker.nextNode();
 
-        while (currentNode) {
-            const content = currentNode.textContent?.toLowerCase() || '';
-            const query = text.toLowerCase();
-            let startPos = 0;
+            while (currentNode) {
+                const content = currentNode.textContent?.toLowerCase() || '';
+                const query = text.toLowerCase();
+                let startPos = 0;
 
-            while ((startPos = content.indexOf(query, startPos)) !== -1) {
-                try {
-                    const range = new Range();
-                    range.setStart(currentNode, startPos);
-                    range.setEnd(currentNode, startPos + text.length);
-                    ranges.push(range);
-                } catch (e) {
-                    // Skip invalid ranges
+                while ((startPos = content.indexOf(query, startPos)) !== -1) {
+                    try {
+                        const range = new Range();
+                        range.setStart(currentNode, startPos);
+                        range.setEnd(currentNode, startPos + text.length);
+                        ranges.push(range);
+                    } catch (e) {
+                        // Skip invalid ranges
+                    }
+                    startPos += text.length;
                 }
-                startPos += text.length;
+                currentNode = treeWalker.nextNode();
             }
-            currentNode = treeWalker.nextNode();
         }
 
         setTotalMatches(ranges.length);
@@ -629,7 +891,6 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                 const activeHighlight = new (window as any).Highlight(activeRange);
                 (CSS as any).highlights.set('search-active', activeHighlight);
 
-                // Safe scroll
                 if (activeRange.startContainer.parentElement) {
                     activeRange.startContainer.parentElement.scrollIntoView({
                         behavior: 'smooth',
@@ -640,12 +901,9 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                 setMatchIndex(nextIndex + 1);
             }
         } else if (ranges.length > 0 && !jump) {
-            // If jump is false (typing), we still might want to show matches count
-            // but keep matchIndex at 0 or 1
             setMatchIndex(0);
         }
 
-        // Ensure focus stays in search
         searchInputRef.current?.focus();
     };
 
@@ -661,114 +919,124 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         setIsReplaceMode(false);
         setTotalMatches(0);
         setMatchIndex(0);
-        editorRef.current?.focus();
     };
 
     // Replace current match
     const handleReplace = () => {
-        if (!editorRef.current || !searchText || totalMatches === 0) return;
+        if (!searchText || totalMatches === 0) return;
+        const editorRoots = getAllEditorRoots();
+        if (editorRoots.length === 0) return;
 
-        // Temporarily disable search active to allow save
         isSearchActive.current = false;
 
-        // Find all text nodes and their matches
         const ranges: Range[] = [];
-        const treeWalker = document.createTreeWalker(editorRef.current, NodeFilter.SHOW_TEXT);
-        let currentNode = treeWalker.nextNode();
+        for (const root of editorRoots) {
+            const treeWalker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+            let currentNode = treeWalker.nextNode();
 
-        while (currentNode) {
-            const content = currentNode.textContent?.toLowerCase() || '';
-            const query = searchText.toLowerCase();
-            let startPos = 0;
+            while (currentNode) {
+                const content = currentNode.textContent?.toLowerCase() || '';
+                const query = searchText.toLowerCase();
+                let startPos = 0;
 
-            while ((startPos = content.indexOf(query, startPos)) !== -1) {
-                try {
-                    const range = new Range();
-                    range.setStart(currentNode, startPos);
-                    range.setEnd(currentNode, startPos + searchText.length);
-                    ranges.push(range);
-                } catch (e) {
-                    // Skip invalid ranges
+                while ((startPos = content.indexOf(query, startPos)) !== -1) {
+                    try {
+                        const range = new Range();
+                        range.setStart(currentNode, startPos);
+                        range.setEnd(currentNode, startPos + searchText.length);
+                        ranges.push(range);
+                    } catch (e) {}
+                    startPos += searchText.length;
                 }
-                startPos += searchText.length;
+                currentNode = treeWalker.nextNode();
             }
-            currentNode = treeWalker.nextNode();
         }
 
         if (ranges.length === 0) return;
 
-        // Replace the current active match
         const activeIdx = Math.max(0, Math.min((matchIndex || 1) - 1, ranges.length - 1));
         const activeRange = ranges[activeIdx];
         activeRange.deleteContents();
         activeRange.insertNode(document.createTextNode(replaceText));
 
-        // Normalize text nodes to merge adjacent ones
-        editorRef.current.normalize();
+        for (const root of editorRoots) {
+            root.normalize();
+        }
 
-        // Save and re-search
         isEditing.current = true;
-        saveToStoreRef.current();
+        if (viewMode === 'all') {
+            saveToStoreAllRef.current();
+        } else {
+            saveToStoreSingleRef.current();
+        }
         setTimeout(() => handleSearch(searchText, true, true), 50);
     };
 
     // Replace all matches
     const handleReplaceAll = () => {
-        if (!editorRef.current || !searchText || totalMatches === 0) return;
+        if (!searchText || totalMatches === 0) return;
+        const editorRoots = getAllEditorRoots();
+        if (editorRoots.length === 0) return;
 
         isSearchActive.current = false;
 
-        // Find all matches in reverse order so indices stay valid
         const ranges: Range[] = [];
-        const treeWalker = document.createTreeWalker(editorRef.current, NodeFilter.SHOW_TEXT);
-        let currentNode = treeWalker.nextNode();
+        for (const root of editorRoots) {
+            const treeWalker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+            let currentNode = treeWalker.nextNode();
 
-        while (currentNode) {
-            const content = currentNode.textContent?.toLowerCase() || '';
-            const query = searchText.toLowerCase();
-            let startPos = 0;
+            while (currentNode) {
+                const content = currentNode.textContent?.toLowerCase() || '';
+                const query = searchText.toLowerCase();
+                let startPos = 0;
 
-            while ((startPos = content.indexOf(query, startPos)) !== -1) {
-                try {
-                    const range = new Range();
-                    range.setStart(currentNode, startPos);
-                    range.setEnd(currentNode, startPos + searchText.length);
-                    ranges.push(range);
-                } catch (e) {
-                    // Skip invalid ranges
+                while ((startPos = content.indexOf(query, startPos)) !== -1) {
+                    try {
+                        const range = new Range();
+                        range.setStart(currentNode, startPos);
+                        range.setEnd(currentNode, startPos + searchText.length);
+                        ranges.push(range);
+                    } catch (e) {}
+                    startPos += searchText.length;
                 }
-                startPos += searchText.length;
+                currentNode = treeWalker.nextNode();
             }
-            currentNode = treeWalker.nextNode();
         }
 
-        // Replace in reverse order to preserve positions
         for (let i = ranges.length - 1; i >= 0; i--) {
             ranges[i].deleteContents();
             ranges[i].insertNode(document.createTextNode(replaceText));
         }
 
-        editorRef.current.normalize();
+        for (const root of editorRoots) {
+            root.normalize();
+        }
 
         isEditing.current = true;
-        saveToStoreRef.current();
+        if (viewMode === 'all') {
+            saveToStoreAllRef.current();
+        } else {
+            saveToStoreSingleRef.current();
+        }
         setTimeout(() => handleSearch(searchText, false), 50);
     };
 
     // Handle paste
-    const handlePaste = (e: React.ClipboardEvent) => {
+    const handlePaste = (e: React.ClipboardEvent, _chapterIndex?: number) => {
         e.preventDefault();
         const html = e.clipboardData.getData('text/html');
         const text = e.clipboardData.getData('text/plain');
 
         const sel = window.getSelection();
-        if (!sel || !sel.rangeCount || !editorRef.current) return;
+        const activeEditor = viewMode === 'all' && _chapterIndex !== undefined
+            ? chapterEditorRefs.current[_chapterIndex]
+            : singleEditorRef.current;
+        if (!sel || !sel.rangeCount || !activeEditor) return;
         const range = sel.getRangeAt(0);
 
-        // Find if we are currently inside an H2 heading
         let heading: HTMLElement | null = null;
         let current: Node | null = range.startContainer;
-        while (current && current !== editorRef.current) {
+        while (current && current !== activeEditor) {
             if (current instanceof HTMLElement && current.tagName === 'H2') {
                 heading = current;
                 break;
@@ -777,19 +1045,15 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         }
 
         if (heading) {
-            // We are inside an H2 heading.
-            // Only paste the first line inside the heading. Put subsequent lines as regular text below the heading.
             const rawText = text || '';
             const lines = rawText.split(/\r?\n/).map(l => l.trim());
             const firstLine = lines[0] || '';
-            const otherLines = lines.slice(1).filter(l => l.length > 0 || lines.indexOf(l) !== 0); // Keep empty lines but clean up padding
+            const otherLines = lines.slice(1).filter(l => l.length > 0 || lines.indexOf(l) !== 0);
 
-            // Paste first line inside H2 at cursor position
             if (firstLine) {
                 document.execCommand('insertText', false, firstLine);
             }
 
-            // Paste other lines after H2 as regular divs
             if (otherLines.length > 0) {
                 const cleanHtml = otherLines.map(line => {
                     const trimmed = line.trim();
@@ -809,8 +1073,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                 }
 
                 afterRange.insertNode(fragment);
-                
-                // Move selection/cursor to the end of the last inserted div
+
                 const lastInserted = fragment.lastChild || tempDiv.lastChild;
                 if (lastInserted) {
                     const newSelRange = document.createRange();
@@ -821,41 +1084,34 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                 }
             }
         } else {
-            // Not inside a heading. Paste normally.
             if (html) {
-                // Remove MS Clipboard HTML header metadata if present
                 let cleanHtml = html.replace(/^[\s\S]*?<!--StartFragment-->/i, '');
                 cleanHtml = cleanHtml.replace(/<!--EndFragment-->[\s\S]*$/i, '');
 
                 const temp = document.createElement('div');
                 temp.innerHTML = cleanHtml;
 
-                // Normalize all headings (h1-h6) to h2
                 temp.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(h => {
                     const h2 = document.createElement('h2');
                     h2.innerHTML = h.innerHTML;
                     h.parentNode?.replaceChild(h2, h);
                 });
 
-                // Convert paragraphs/spans to divs to avoid excessive margins
                 temp.querySelectorAll('p').forEach(p => {
                     const div = document.createElement('div');
                     div.innerHTML = p.innerHTML;
                     p.parentNode?.replaceChild(div, p);
                 });
 
-                // Clean up styles
                 temp.querySelectorAll('*').forEach(el => {
                     el.removeAttribute('style');
                     el.removeAttribute('class');
                 });
 
-                // Remove empty divs
                 temp.querySelectorAll('div:empty').forEach(el => el.remove());
 
                 document.execCommand('insertHTML', false, temp.innerHTML);
             } else if (text) {
-                // Split plain text by newlines and wrap each line in a div
                 const textLines = text.split(/\r?\n/);
                 const cleanHtml = textLines.map(line => {
                     const trimmed = line.trim();
@@ -866,33 +1122,36 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             }
         }
 
-        // Force save even when search is active — the search uses CSS Highlight API
-        // which doesn't alter the DOM, so saving is safe
         isEditing.current = true;
         const wasSearchActive = isSearchActive.current;
         isSearchActive.current = false;
-        saveToStoreRef.current();
+        if (viewMode === 'all') {
+            saveToStoreAllRef.current();
+        } else {
+            saveToStoreSingleRef.current();
+        }
         if (wasSearchActive) {
             isSearchActive.current = true;
-            // Re-apply search highlights after save
             if (searchText) {
                 setTimeout(() => handleSearch(searchText, false), 50);
             }
         }
     };
 
-    // Toggle heading: if current block is a heading, convert to div; if div/p, convert to heading
+    // Toggle heading
     const toggleHeading = () => {
         const sel = window.getSelection();
-        if (!sel || !sel.rangeCount || !editorRef.current) return;
+        const activeEditor = viewMode === 'all'
+            ? Object.values(chapterEditorRefs.current).find(el => el && el.contains(sel?.anchorNode || null))
+            : singleEditorRef.current;
+        if (!sel || !sel.rangeCount || !activeEditor) return;
 
         const range = sel.getRangeAt(0);
         let node: Node | null = range.startContainer;
 
-        // Search for the closest h2 ancestor
         let heading: HTMLElement | null = null;
         let current: Node | null = node;
-        while (current && current !== editorRef.current) {
+        while (current && current !== activeEditor) {
             if (current instanceof HTMLElement && current.tagName === HEADING_TAG) {
                 heading = current;
                 break;
@@ -903,41 +1162,50 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         const wasHeading = !!heading;
 
         if (heading) {
-            // Remove heading → convert h2 to div
             const div = document.createElement('div');
             div.innerHTML = heading.innerHTML;
             heading.parentNode!.replaceChild(div, heading);
 
-            // Restore cursor
             const newRange = document.createRange();
             newRange.selectNodeContents(div);
             newRange.collapse(false);
             sel.removeAllRanges();
             sel.addRange(newRange);
         } else {
-            // Add heading
             document.execCommand('formatBlock', false, HEADING_TAG);
         }
 
-        editorRef.current.focus();
+        activeEditor.focus();
         isEditing.current = true;
 
-        // Save immediately (not debounced) to persist the heading change
         setTimeout(() => {
-            if (!editorRef.current) return;
-            const currentHtml = editorRef.current.innerHTML;
-
             if (viewMode === 'all') {
-                updateBook(bookId, { [contentField]: currentHtml });
-                canvasContentRef.current = currentHtml;
-                const parsed = parseChaptersFromElement(editorRef.current);
+                // Sync all visible editors
+                for (const [idxStr, el] of Object.entries(chapterEditorRefs.current)) {
+                    if (el) {
+                        chapterHtmlsRef.current[parseInt(idxStr)] = el.innerHTML;
+                    }
+                }
+                chapterDirtyRef.current.clear();
+
+                const assembledHtml = chapterHtmlsRef.current.join('');
+                updateBook(bookId, { [contentField]: assembledHtml });
+                canvasContentRef.current = assembledHtml;
+
+                // Re-split and update state
+                const newSplit = splitHtmlIntoChapters(assembledHtml);
+                chapterHtmlsRef.current = newSplit;
+                setChapterHtmls(newSplit);
+
+                const parsed = parseChaptersFromHtml(assembledHtml);
                 onChaptersChange(parsed);
                 if (contentType === 'characters') {
-                    syncCharactersFromHtml(bookId, currentHtml);
+                    syncCharactersFromHtml(bookId, assembledHtml);
                 }
-            } else if (viewMode === 'single' && selectedChapterIndex !== null) {
+            } else if (viewMode === 'single' && selectedChapterIndex !== null && singleEditorRef.current) {
+                const currentHtml = singleEditorRef.current.innerHTML;
                 const fullHtml = canvasContentRef.current;
-                if (!fullHtml) return; // safety: no base content, skip
+                if (!fullHtml) return;
                 const newFullHtml = replaceChapterHtml(fullHtml, selectedChapterIndex, currentHtml);
                 updateBook(bookId, { [contentField]: newFullHtml });
                 canvasContentRef.current = newFullHtml;
@@ -948,23 +1216,17 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                 }
 
                 if (wasHeading) {
-                    // Heading removed → chapter merged into previous one.
-                    // Figure out which chapter index now holds the merged content.
                     const newIdx = selectedChapterIndex > 0
                         ? Math.min(selectedChapterIndex - 1, parsed.length - 1)
                         : (parsed.length > 0 ? 0 : null);
                     lastChapterIdx.current = newIdx;
-                    if (newIdx !== null && editorRef.current) {
-                        editorRef.current.innerHTML = extractChapterHtml(newFullHtml, newIdx);
+                    if (newIdx !== null && singleEditorRef.current) {
+                        singleEditorRef.current.innerHTML = extractChapterHtml(newFullHtml, newIdx);
                     }
                 } else {
-                    // Heading added → chapter split into two.
-                    // Stay on the current chapter (same index), update lastChapterIdx so
-                    // the navigation effect doesn't reload with stale index.
                     lastChapterIdx.current = selectedChapterIndex;
-                    // Show only the first part (up to the new heading) in the editor
-                    if (editorRef.current) {
-                        editorRef.current.innerHTML = extractChapterHtml(newFullHtml, selectedChapterIndex);
+                    if (singleEditorRef.current) {
+                        singleEditorRef.current.innerHTML = extractChapterHtml(newFullHtml, selectedChapterIndex);
                     }
                 }
             }
@@ -972,41 +1234,26 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         }, 50);
     };
 
-    /** Run a document.execCommand while preserving the user's current selection.
-     *  The old code called editorRef.current.focus() after execCommand which
-     *  collapsed the selection to the start of the contentEditable, losing the
-     *  user's cursor position. Instead we save/restore the selection range. */
     const execPreservingSelection = (command: string, value?: string) => {
         const sel = window.getSelection();
-        if (!sel || !sel.rangeCount || !editorRef.current) return;
+        const activeEditor = viewMode === 'all'
+            ? Object.values(chapterEditorRefs.current).find(el => el && el.contains(sel?.anchorNode || null))
+            : singleEditorRef.current;
+        if (!sel || !sel.rangeCount || !activeEditor) return;
         const range = sel.getRangeAt(0).cloneRange();
 
         document.execCommand(command, false, value);
 
-        // Restore selection — execCommand may have changed it
         try {
             sel.removeAllRanges();
             sel.addRange(range);
-        } catch (_) {
-            // Ignore — range may have become invalid
-        }
+        } catch (_) {}
     };
 
-    const formatBold = () => {
-        execPreservingSelection('bold');
-    };
-
-    const formatItalic = () => {
-        execPreservingSelection('italic');
-    };
-
-    const formatUnderline = () => {
-        execPreservingSelection('underline');
-    };
-
-    const formatStrikethrough = () => {
-        execPreservingSelection('strikeThrough');
-    };
+    const formatBold = () => { execPreservingSelection('bold'); };
+    const formatItalic = () => { execPreservingSelection('italic'); };
+    const formatUnderline = () => { execPreservingSelection('underline'); };
+    const formatStrikethrough = () => { execPreservingSelection('strikeThrough'); };
 
     const applyFontFamily = (font: string) => {
         setEditorFontFamily(font);
@@ -1029,15 +1276,19 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     const applyHighlight = (color: string) => {
         execPreservingSelection('hiliteColor', color);
         isEditing.current = true;
-        setTimeout(() => saveToStoreRef.current(), 100);
+        setTimeout(() => {
+            if (viewMode === 'all') {
+                saveToStoreAllRef.current();
+            } else {
+                saveToStoreSingleRef.current();
+            }
+        }, 100);
     };
 
-    // Helper to clean HTML for rich clipboard copy
     const cleanHtmlForClipboard = (htmlString: string): string => {
         const temp = document.createElement('div');
         temp.innerHTML = htmlString;
 
-        // Strip HTML comments (like <!--EndFragment-->)
         const iterator = document.createNodeIterator(temp, NodeFilter.SHOW_COMMENT, null);
         let currentNode;
         const comments: Node[] = [];
@@ -1046,7 +1297,6 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         }
         comments.forEach(c => c.parentNode?.removeChild(c));
 
-        // Strip any inline styles/classes that could mess up pasting
         temp.querySelectorAll('*').forEach(el => {
             el.removeAttribute('style');
             el.removeAttribute('class');
@@ -1055,7 +1305,6 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         return temp.innerHTML;
     };
 
-    // Helper to format HTML into clean plain text for copying
     const getFormattedText = (htmlString: string) => {
         const temp = document.createElement('div');
         temp.style.position = 'absolute';
@@ -1063,7 +1312,6 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         temp.style.whiteSpace = 'pre-wrap';
         temp.innerHTML = htmlString;
 
-        // Strip HTML comments (like <!--EndFragment-->)
         const iterator = document.createNodeIterator(temp, NodeFilter.SHOW_COMMENT, null);
         let currentNode;
         const comments: Node[] = [];
@@ -1076,7 +1324,6 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         let text = temp.innerText || '';
         document.body.removeChild(temp);
 
-        // Strip literal End Fragment / StartFragment that may survive as text
         text = text.replace(/\s*(Start|End)\s*Fragment\s*/gi, '');
 
         return text.replace(/^\n+|\n+$/g, '');
@@ -1084,7 +1331,6 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
     const copyToClipboard = async (text: string, type: string, html?: string) => {
         try {
-            // Try rich copy with both HTML and plain text
             if (html && typeof ClipboardItem !== 'undefined') {
                 const cleanedHtml = cleanHtmlForClipboard(html);
                 const htmlBlob = new Blob([cleanedHtml], { type: 'text/html' });
@@ -1101,7 +1347,6 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             setTimeout(() => setCopiedType(null), 2000);
         } catch (err) {
             console.error('Clipboard API failed', err);
-            // Fallback for older environments or when Clipboard API throws
             const textArea = document.createElement("textarea");
             textArea.value = text;
             textArea.style.position = "fixed";
@@ -1120,13 +1365,11 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     };
 
     const handleCopy = () => {
-        if (!editorRef.current) return;
-
         let htmlSnippet = '';
         if (viewMode === 'single' && selectedChapterIndex !== null) {
             htmlSnippet = extractChapterHtml(canvasContentRef.current, selectedChapterIndex);
         } else {
-            htmlSnippet = editorRef.current.innerHTML;
+            htmlSnippet = chapterHtmlsRef.current.join('');
         }
 
         const text = getFormattedText(htmlSnippet);
@@ -1134,7 +1377,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     };
 
     const handleCopyHeading = () => {
-        if (!editorRef.current || viewMode !== 'single' || selectedChapterIndex === null) return;
+        if (viewMode !== 'single' || selectedChapterIndex === null) return;
         const htmlSnippet = extractChapterHtml(canvasContentRef.current, selectedChapterIndex);
         const temp = document.createElement('div');
         temp.innerHTML = htmlSnippet;
@@ -1146,7 +1389,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     };
 
     const handleCopyChapterText = () => {
-        if (!editorRef.current || viewMode !== 'single' || selectedChapterIndex === null) return;
+        if (viewMode !== 'single' || selectedChapterIndex === null) return;
         const htmlSnippet = extractChapterHtml(canvasContentRef.current, selectedChapterIndex);
         const temp = document.createElement('div');
         temp.innerHTML = htmlSnippet;
@@ -1158,8 +1401,10 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     };
 
     const handleCopyAll = () => {
-        if (!book?.[contentField]) return;
-        const htmlSnippet = book[contentField];
+        const htmlSnippet = viewMode === 'all'
+            ? chapterHtmlsRef.current.join('')
+            : (book?.[contentField] || '');
+        if (!htmlSnippet) return;
         const text = getFormattedText(htmlSnippet);
         copyToClipboard(text, 'all', htmlSnippet);
     };
@@ -1172,33 +1417,37 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         copyToClipboard(dateStr, 'datetime');
     };
 
-    // Determine which heading levels to show in toolbar hints
     const headingStyles = cn(
         "[&_h2]:text-2xl [&_h2]:font-bold [&_h2]:mt-10 [&_h2]:mb-3 [&_h2]:font-serif [&_h2]:text-emerald-100",
         "[&_div]:my-1 [&_p]:my-1 [&_div]:font-normal [&_p]:font-normal",
         "[&_h2:first-child]:mt-2"
     );
 
-    // ── Sticky chapter heading on scroll ("all" mode) ─────────────────────
+    // ── Sticky chapter heading on scroll ─────────────────────────────────
     const [stickyChapter, setStickyChapter] = useState<string | null>(null);
     const onActiveChapterChangeRef = useRef(onActiveChapterChange);
     useEffect(() => { onActiveChapterChangeRef.current = onActiveChapterChange; }, [onActiveChapterChange]);
 
-    // Expose scrollToChapter to parent via ref
     useImperativeHandle(ref, () => ({
         scrollToChapter: (index: number) => {
-            const editorEl = editorRef.current;
             const scrollEl = scrollContainerRef.current;
-            if (!editorEl || !scrollEl) return;
+            if (!scrollEl) return;
 
-            const headings = editorEl.querySelectorAll(HEADING_SELECTOR);
-            if (index < 0 || index >= headings.length) return;
-
-            const heading = headings[index] as HTMLElement;
-            const hTop = heading.offsetTop - scrollEl.offsetTop;
-            scrollEl.scrollTo({ top: hTop - 20, behavior: 'smooth' });
+            if (viewMode === 'all') {
+                const chapterContainer = scrollEl.querySelector(`[data-chapter-index="${index}"]`) as HTMLElement;
+                if (chapterContainer) {
+                    const containerTop = chapterContainer.offsetTop - scrollEl.offsetTop;
+                    scrollEl.scrollTo({ top: containerTop - 20, behavior: 'smooth' });
+                }
+            } else if (singleEditorRef.current) {
+                const headings = singleEditorRef.current.querySelectorAll(HEADING_SELECTOR);
+                if (index < 0 || index >= headings.length) return;
+                const heading = headings[index] as HTMLElement;
+                const hTop = heading.offsetTop - scrollEl.offsetTop;
+                scrollEl.scrollTo({ top: hTop - 20, behavior: 'smooth' });
+            }
         },
-    }), []);
+    }), [viewMode]);
 
     useEffect(() => {
         if (viewMode !== 'all') {
@@ -1207,30 +1456,35 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             return;
         }
         const scrollEl = scrollContainerRef.current;
-        const editorEl = editorRef.current;
-        if (!scrollEl || !editorEl) return;
+        if (!scrollEl) return;
 
         const handleScroll = () => {
-            const headings = editorEl.querySelectorAll(HEADING_SELECTOR);
-            if (headings.length === 0) { setStickyChapter(null); onActiveChapterChangeRef.current?.(null); return; }
+            const chapterContainers = scrollEl.querySelectorAll('[data-chapter-index]');
+            if (chapterContainers.length === 0) {
+                setStickyChapter(null);
+                onActiveChapterChangeRef.current?.(null);
+                return;
+            }
 
             const scrollTop = scrollEl.scrollTop;
             let current: string | null = null;
             let currentIdx: number | null = null;
 
-            for (let i = 0; i < headings.length; i++) {
-                const h = headings[i] as HTMLElement;
-                // offsetTop is relative to editorEl parent, adjust by scrollEl offset
-                const hTop = h.offsetTop - scrollEl.offsetTop;
-                if (hTop <= scrollTop + 60) {
-                    current = h.textContent?.trim() || null;
-                    currentIdx = i;
+            for (let i = 0; i < chapterContainers.length; i++) {
+                const container = chapterContainers[i] as HTMLElement;
+                const cTop = container.offsetTop - scrollEl.offsetTop;
+                if (cTop <= scrollTop + 60) {
+                    const idx = parseInt(container.dataset.chapterIndex || '-1', 10);
+                    if (idx >= 0 && idx < chapterHtmlsRef.current.length) {
+                        const titleMatch = chapterHtmlsRef.current[idx].match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
+                        current = titleMatch ? fastStripHtml(titleMatch[1]).trim() : null;
+                        currentIdx = idx;
+                    }
                 } else {
                     break;
                 }
             }
 
-            // Only show sticky when scrolled past the first heading
             if (scrollTop < 40) { current = null; currentIdx = null; }
             setStickyChapter(current);
             onActiveChapterChangeRef.current?.(currentIdx);
@@ -1238,7 +1492,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
         scrollEl.addEventListener('scroll', handleScroll, { passive: true });
         return () => scrollEl.removeEventListener('scroll', handleScroll);
-    }, [viewMode, bookId]);
+    }, [viewMode, bookId, chapterHtmls]);
 
     // Font options
     const FONT_OPTIONS = [
@@ -1425,52 +1679,19 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                             <Heading className="w-4 h-4" />
                         </button>
                 <div className="w-px h-5 bg-zinc-800 self-center" />
-                <button
-                    onClick={formatBold}
-                    className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm font-bold"
-                    title="Жирный (Ctrl+B)"
-                >
-                    <Bold className="w-4 h-4" />
-                </button>
-                <button
-                    onClick={formatItalic}
-                    className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm italic"
-                    title="Курсив (Ctrl+I)"
-                >
-                    <Italic className="w-4 h-4" />
-                </button>
-                <button
-                    onClick={formatUnderline}
-                    className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm"
-                    title="Подчёркнутый (Ctrl+U)"
-                >
-                    <Underline className="w-4 h-4" />
-                </button>
-                <button
-                    onClick={formatStrikethrough}
-                    className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm"
-                    title="Зачёркнутый"
-                >
-                    <Strikethrough className="w-4 h-4" />
-                </button>
+                <button onClick={formatBold} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm font-bold" title="Жирный (Ctrl+B)"><Bold className="w-4 h-4" /></button>
+                <button onClick={formatItalic} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm italic" title="Курсив (Ctrl+I)"><Italic className="w-4 h-4" /></button>
+                <button onClick={formatUnderline} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Подчёркнутый (Ctrl+U)"><Underline className="w-4 h-4" /></button>
+                <button onClick={formatStrikethrough} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Зачёркнутый"><Strikethrough className="w-4 h-4" /></button>
                 <div className="relative">
-                    <button
-                        onClick={() => { setShowHighlightMenu(m => !m); setShowFontMenu(false); setShowSizeMenu(false); setShowLineHeightMenu(false); }}
-                        className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm"
-                        title="Маркер (Выделить текст)"
-                    >
-                        <Highlighter className="w-4 h-4" />
-                        <ChevronDown className="w-3 h-3 animate-pulse" />
+                    <button onClick={() => { setShowHighlightMenu(m => !m); setShowFontMenu(false); setShowSizeMenu(false); setShowLineHeightMenu(false); }} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Маркер (Выделить текст)">
+                        <Highlighter className="w-4 h-4" /><ChevronDown className="w-3 h-3 animate-pulse" />
                     </button>
                     {showHighlightMenu && (
                         <div className="absolute top-full right-0 mt-1 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl p-2.5 min-w-[200px] z-50 space-y-1.5 animate-in fade-in slide-in-from-top-1 duration-150">
                             <div className="text-[10px] font-bold text-zinc-505 uppercase tracking-wider mb-1 px-1">Цвет маркера</div>
                             {HIGHLIGHT_OPTIONS.map(opt => (
-                                <button
-                                    key={opt.label}
-                                    onMouseDown={(e) => { e.preventDefault(); applyHighlight(opt.value); setShowHighlightMenu(false); }}
-                                    className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs text-zinc-300 hover:bg-zinc-800 hover:text-emerald-400 transition-colors text-left font-medium"
-                                >
+                                <button key={opt.label} onMouseDown={(e) => { e.preventDefault(); applyHighlight(opt.value); setShowHighlightMenu(false); }} className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs text-zinc-300 hover:bg-zinc-800 hover:text-emerald-400 transition-colors text-left font-medium">
                                     <div className={cn("w-4 h-4 rounded-full border border-zinc-800 shrink-0", opt.colorClass)} />
                                     <span>{opt.label}</span>
                                 </button>
@@ -1479,167 +1700,42 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                     )}
                 </div>
                 <div className="w-px h-5 bg-zinc-800 self-center" />
-                {/* Font family */}
                 <div className="relative">
-                    <button
-                        onClick={() => { setShowFontMenu(m => !m); setShowSizeMenu(false); setShowLineHeightMenu(false); setShowHighlightMenu(false); }}
-                        className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-xs"
-                        title="Шрифт"
-                    >
-                        <Type className="w-3.5 h-3.5" />
-                        <ChevronDown className="w-3 h-3" />
-                    </button>
-                    {showFontMenu && (
-                        <div className="absolute top-full right-0 mt-1 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl py-1 min-w-[180px] max-h-[280px] overflow-y-auto z-50">
-                            {FONT_OPTIONS.map(f => (
-                                <button
-                                    key={f.label}
-                                    onMouseDown={(e) => { e.preventDefault(); applyFontFamily(f.value || 'inherit'); setShowFontMenu(false); }}
-                                    className="w-full text-left px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-emerald-400 transition-colors"
-                                    style={{ fontFamily: f.value || 'inherit' }}
-                                >
-                                    {f.label}
-                                </button>
-                            ))}
-                        </div>
-                    )}
+                    <button onClick={() => { setShowFontMenu(m => !m); setShowSizeMenu(false); setShowLineHeightMenu(false); setShowHighlightMenu(false); }} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-xs" title="Шрифт"><Type className="w-3.5 h-3.5" /><ChevronDown className="w-3 h-3" /></button>
+                    {showFontMenu && (<div className="absolute top-full right-0 mt-1 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl py-1 min-w-[180px] max-h-[280px] overflow-y-auto z-50">{FONT_OPTIONS.map(f => (<button key={f.label} onMouseDown={(e) => { e.preventDefault(); applyFontFamily(f.value || 'inherit'); setShowFontMenu(false); }} className="w-full text-left px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-emerald-400 transition-colors" style={{ fontFamily: f.value || 'inherit' }}>{f.label}</button>))}</div>)}
                 </div>
-                {/* Font size */}
                 <div className="relative">
-                    <button
-                        onClick={() => { setShowSizeMenu(m => !m); setShowFontMenu(false); setShowLineHeightMenu(false); setShowHighlightMenu(false); }}
-                        className="flex items-center gap-0.5 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-xs tabular-nums"
-                        title="Размер шрифта"
-                    >
-                        <span className="text-[10px] font-bold">Aa</span>
-                        <ChevronDown className="w-3 h-3" />
-                    </button>
-                    {showSizeMenu && (
-                        <div className="absolute top-full right-0 mt-1 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl py-1 min-w-[80px] z-50">
-                            {SIZE_OPTIONS.map(s => (
-                                <button
-                                    key={s.label}
-                                    onMouseDown={(e) => { e.preventDefault(); applyFontSize(s.value); setShowSizeMenu(false); }}
-                                    className="w-full text-left px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-emerald-400 transition-colors"
-                                >
-                                    {s.label}px
-                                </button>
-                            ))}
-                        </div>
-                    )}
+                    <button onClick={() => { setShowSizeMenu(m => !m); setShowFontMenu(false); setShowLineHeightMenu(false); setShowHighlightMenu(false); }} className="flex items-center gap-0.5 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-xs tabular-nums" title="Размер шрифта"><span className="text-[10px] font-bold">Aa</span><ChevronDown className="w-3 h-3" /></button>
+                    {showSizeMenu && (<div className="absolute top-full right-0 mt-1 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl py-1 min-w-[80px] z-50">{SIZE_OPTIONS.map(s => (<button key={s.label} onMouseDown={(e) => { e.preventDefault(); applyFontSize(s.value); setShowSizeMenu(false); }} className="w-full text-left px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-emerald-400 transition-colors">{s.label}px</button>))}</div>)}
                 </div>
-                {/* Line height */}
                 <div className="relative">
-                    <button
-                        onClick={() => { setShowLineHeightMenu(m => !m); setShowFontMenu(false); setShowSizeMenu(false); setShowHighlightMenu(false); }}
-                        className="flex items-center gap-0.5 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-xs"
-                        title="Межстрочный интервал"
-                    >
-                        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <line x1="21" y1="6" x2="3" y2="6" /><line x1="21" y1="12" x2="3" y2="12" /><line x1="21" y1="18" x2="3" y2="18" />
-                        </svg>
+                    <button onClick={() => { setShowLineHeightMenu(m => !m); setShowFontMenu(false); setShowSizeMenu(false); setShowHighlightMenu(false); }} className="flex items-center gap-0.5 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-xs" title="Межстрочный интервал">
+                        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="21" y1="6" x2="3" y2="6" /><line x1="21" y1="12" x2="3" y2="12" /><line x1="21" y1="18" x2="3" y2="18" /></svg>
                         <ChevronDown className="w-3 h-3" />
                     </button>
-                    {showLineHeightMenu && (
-                        <div className="absolute top-full right-0 mt-1 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl py-1 min-w-[90px] z-50">
-                            {LINE_HEIGHT_OPTIONS.map(lh => (
-                                <button
-                                    key={lh.label}
-                                    onMouseDown={(e) => { e.preventDefault(); applyLineHeight(lh.value); setShowLineHeightMenu(false); }}
-                                    className="w-full text-left px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-emerald-400 transition-colors"
-                                >
-                                    {lh.label}×
-                                </button>
-                            ))}
-                        </div>
-                    )}
+                    {showLineHeightMenu && (<div className="absolute top-full right-0 mt-1 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl py-1 min-w-[90px] z-50">{LINE_HEIGHT_OPTIONS.map(lh => (<button key={lh.label} onMouseDown={(e) => { e.preventDefault(); applyLineHeight(lh.value); setShowLineHeightMenu(false); }} className="w-full text-left px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-emerald-400 transition-colors">{lh.label}×</button>))}</div>)}
                 </div>
                 <div className="w-px h-5 bg-zinc-800 self-center" />
-                {/* Copy buttons */}
                 {viewMode === 'single' ? (
                     <>
-                        <button
-                            onClick={handleCopyHeading}
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm"
-                            title="Копировать заголовок"
-                        >
-                            {copiedType === 'heading' ? (
-                                <><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Название</span></>
-                            ) : (
-                                <><Heading className="w-4 h-4" /><span className="hidden sm:inline">Название</span></>
-                            )}
+                        <button onClick={handleCopyHeading} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Копировать заголовок">
+                            {copiedType === 'heading' ? (<><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Название</span></>) : (<><Heading className="w-4 h-4" /><span className="hidden sm:inline">Название</span></>)}
                         </button>
-                        <button
-                            onClick={handleCopyChapterText}
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm"
-                            title={
-                                contentType === 'characters' ? "Копировать описание" :
-                                contentType === 'annotation' ? "Копировать аннотацию" :
-                                contentType === 'short_description' ? "Копировать краткое описание" :
-                                contentType === 'chapter_plan' ? "Копировать план главы" :
-                                "Копировать текст главы"
-                            }
-                        >
-                            {copiedType === 'text' ? (
-                                <><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Текст</span></>
-                            ) : (
-                                <><FileText className="w-4 h-4" /><span className="hidden sm:inline">Текст</span></>
-                            )}
+                        <button onClick={handleCopyChapterText} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title={contentType === 'characters' ? "Копировать описание" : contentType === 'annotation' ? "Копировать аннотацию" : contentType === 'short_description' ? "Копировать краткое описание" : contentType === 'chapter_plan' ? "Копировать план главы" : "Копировать текст главы"}>
+                            {copiedType === 'text' ? (<><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Текст</span></>) : (<><FileText className="w-4 h-4" /><span className="hidden sm:inline">Текст</span></>)}
                         </button>
-                        <button
-                            onClick={handleCopy}
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm"
-                            title={
-                                contentType === 'characters' ? "Копировать карточку" :
-                                contentType === 'annotation' ? "Копировать аннотацию" :
-                                contentType === 'short_description' ? "Копировать краткое описание" :
-                                contentType === 'chapter_plan' ? "Копировать план главы" :
-                                "Копировать главу"
-                            }
-                        >
-                            {copiedType === 'chapter' ? (
-                                <><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">
-                                    {contentType === 'characters' ? "Персонаж" :
-                                     contentType === 'annotation' ? "Аннотация" :
-                                     contentType === 'short_description' ? "Описание" :
-                                     contentType === 'chapter_plan' ? "План главы" :
-                                     "Вся глава"}
-                                </span></>
-                            ) : (
-                                <><Copy className="w-4 h-4" /><span className="hidden sm:inline">
-                                    {contentType === 'characters' ? "Персонаж" :
-                                     contentType === 'annotation' ? "Аннотация" :
-                                     contentType === 'short_description' ? "Описание" :
-                                     contentType === 'chapter_plan' ? "План главы" :
-                                     "Вся глава"}
-                                </span></>
-                            )}
+                        <button onClick={handleCopy} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title={contentType === 'characters' ? "Копировать карточку" : contentType === 'annotation' ? "Копировать аннотацию" : contentType === 'short_description' ? "Копировать краткое описание" : contentType === 'chapter_plan' ? "Копировать план главы" : "Копировать главу"}>
+                            {copiedType === 'chapter' ? (<><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">{contentType === 'characters' ? "Персонаж" : contentType === 'annotation' ? "Аннотация" : contentType === 'short_description' ? "Описание" : contentType === 'chapter_plan' ? "План главы" : "Вся глава"}</span></>) : (<><Copy className="w-4 h-4" /><span className="hidden sm:inline">{contentType === 'characters' ? "Персонаж" : contentType === 'annotation' ? "Аннотация" : contentType === 'short_description' ? "Описание" : contentType === 'chapter_plan' ? "План главы" : "Вся глава"}</span></>)}
                         </button>
                         {contentType !== 'characters' && contentType !== 'annotation' && contentType !== 'short_description' && contentType !== 'chapter_plan' && chapters[selectedChapterIndex!]?.scheduledDate && (
-                            <button
-                                onClick={handleCopyDateTime}
-                                className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-amber-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm"
-                                title="Копировать дату и время выкладки"
-                            >
-                                {copiedType === 'datetime' ? (
-                                    <><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Дата</span></>
-                                ) : (
-                                    <><Clock className="w-4 h-4" /><span className="hidden sm:inline">Дата</span></>
-                                )}
+                            <button onClick={handleCopyDateTime} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-amber-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Копировать дату и время выкладки">
+                                {copiedType === 'datetime' ? (<><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Дата</span></>) : (<><Clock className="w-4 h-4" /><span className="hidden sm:inline">Дата</span></>)}
                             </button>
                         )}
                     </>
                 ) : (
-                    <button
-                        onClick={handleCopyAll}
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm"
-                        title="Копировать всё"
-                    >
-                        {copiedType === 'all' ? (
-                            <><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Скопировано</span></>
-                        ) : (
-                            <><Copy className="w-4 h-4" /><span className="hidden sm:inline">Всё</span></>
-                        )}
+                    <button onClick={handleCopyAll} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Копировать всё">
+                        {copiedType === 'all' ? (<><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Скопировано</span></>) : (<><Copy className="w-4 h-4" /><span className="hidden sm:inline">Всё</span></>)}
                     </button>
                 )}
                     </>
@@ -1648,38 +1744,112 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
             {/* Editor Content */}
             <div ref={scrollContainerRef} className="flex-1 overflow-y-auto w-full px-8 pb-32">
-                <div
-                    ref={editorRef}
-                    contentEditable
-                    onPaste={handlePaste}
-                    onBlur={() => { isEditing.current = false; saveToStoreRef.current(); }}
-                    style={{
-                        fontSize: `${editorFontSize}px`,
-                        fontFamily: editorFontFamily || 'inherit',
-                        lineHeight: editorLineHeight
-                    }}
-                    className={cn(
-                        "min-h-full max-w-3xl mx-auto py-12 outline-none text-zinc-200 font-sans font-normal leading-relaxed text-base",
-                        headingStyles
-                    )}
-                    spellCheck={true}
-                    data-placeholder={viewMode === 'all'
-                        ? (contentType === 'characters'
-                            ? "Начните писать. Используйте кнопку H для создания персонажей."
-                            : contentType === 'chapter_plan'
-                                ? "Начните писать поглавный план. Используйте кнопку H для создания глав плана."
-                                : contentType === 'annotation'
-                                    ? "Введите аннотацию книги..."
-                                    : contentType === 'short_description'
-                                        ? "Введите краткое описание книги..."
-                                        : "Начните писать. Используйте кнопку H для создания глав.")
-                        : (contentType === 'characters'
-                            ? "Выберите персонажа справа для редактирования."
-                            : contentType === 'chapter_plan'
-                                ? "Выберите главу плана справа для редактирования."
-                                : "Выберите главу справа для редактирования.")
-                    }
-                />
+                {viewMode === 'all' ? (
+                    <div className="min-h-full max-w-3xl mx-auto py-12">
+                        {chapterHtmls.length === 0 ? (
+                            <div
+                                ref={singleEditorRef}
+                                contentEditable
+                                onPaste={(e) => handlePaste(e)}
+                                onBlur={() => {
+                                    if (!singleEditorRef.current) return;
+                                    const currentHtml = singleEditorRef.current.innerHTML;
+                                    if (currentHtml.trim()) {
+                                        updateBook(bookId, { [contentField]: currentHtml });
+                                        canvasContentRef.current = currentHtml;
+                                        const newSplit = splitHtmlIntoChapters(currentHtml);
+                                        if (newSplit.length > 0) {
+                                            chapterHtmlsRef.current = newSplit;
+                                            setChapterHtmls(newSplit);
+                                        }
+                                        const parsed = parseChaptersFromHtml(currentHtml);
+                                        onChaptersChange(parsed);
+                                    }
+                                }}
+                                onInput={() => {
+                                    isEditing.current = true;
+                                    if (singleEditorRef.current) {
+                                        const html = singleEditorRef.current.innerHTML;
+                                        const splits = splitHtmlIntoChapters(html);
+                                        if (splits.length > 0) {
+                                            updateBook(bookId, { [contentField]: html });
+                                            canvasContentRef.current = html;
+                                            chapterHtmlsRef.current = splits;
+                                            setChapterHtmls(splits);
+                                            const parsed = parseChaptersFromHtml(html);
+                                            onChaptersChange(parsed);
+                                        }
+                                    }
+                                }}
+                                style={{
+                                    fontSize: `${editorFontSize}px`,
+                                    fontFamily: editorFontFamily || 'inherit',
+                                    lineHeight: editorLineHeight
+                                }}
+                                className={cn(
+                                    "min-h-full outline-none text-zinc-200 font-sans font-normal leading-relaxed text-base",
+                                    headingStyles
+                                )}
+                                spellCheck={true}
+                                data-placeholder={
+                                    contentType === 'characters'
+                                        ? "Начните писать. Используйте кнопку H для создания персонажей."
+                                        : contentType === 'chapter_plan'
+                                            ? "Начните писать поглавный план. Используйте кнопку H для создания глав плана."
+                                            : contentType === 'annotation'
+                                                ? "Введите аннотацию книги..."
+                                                : contentType === 'short_description'
+                                                    ? "Введите краткое описание книги..."
+                                                    : "Начните писать. Используйте кнопку H для создания глав."
+                                }
+                            />
+                        ) : (
+                            chapterHtmls.map((chHtml, idx) => (
+                                <VirtualChapterBlock
+                                    key={`ch-${idx}-${chapterHtmls.length}`}
+                                    index={idx}
+                                    html={chHtml}
+                                    isVisible={visibleChapters.has(idx)}
+                                    cachedHeight={chapterHeightsRef.current[idx] || null}
+                                    editorFontSize={editorFontSize}
+                                    editorFontFamily={editorFontFamily}
+                                    editorLineHeight={editorLineHeight}
+                                    headingStyles={headingStyles}
+                                    onInput={handleChapterInput}
+                                    onHeightMeasured={handleHeightMeasured}
+                                    onFocusRequest={handleFocusRequest}
+                                    onPaste={handlePaste}
+                                    registerRef={registerChapterRef}
+                                    observerRef={observerRef}
+                                />
+                            ))
+                        )}
+                    </div>
+                ) : (
+                    <div
+                        ref={singleEditorRef}
+                        contentEditable
+                        onPaste={(e) => handlePaste(e)}
+                        onBlur={() => { isEditing.current = false; saveToStoreSingleRef.current(); }}
+                        style={{
+                            fontSize: `${editorFontSize}px`,
+                            fontFamily: editorFontFamily || 'inherit',
+                            lineHeight: editorLineHeight
+                        }}
+                        className={cn(
+                            "min-h-full max-w-3xl mx-auto py-12 outline-none text-zinc-200 font-sans font-normal leading-relaxed text-base",
+                            headingStyles
+                        )}
+                        spellCheck={true}
+                        data-placeholder={
+                            contentType === 'characters'
+                                ? "Выберите персонажа справа для редактирования."
+                                : contentType === 'chapter_plan'
+                                    ? "Выберите главу плана справа для редактирования."
+                                    : "Выберите главу справа для редактирования."
+                        }
+                    />
+                )}
             </div>
         </div>
     );

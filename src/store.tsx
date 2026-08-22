@@ -534,6 +534,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setState((s) => ({ ...s, books: [...s.books, { ...book, id: generateId(), createdAt: Date.now() }] }));
   };
 
+  // Cache for canvas content lengths to avoid re-parsing on every save
+  const canvasLengthCache = useRef<Record<string, number>>({});
+
   const updateBook = (id: string, updates: Partial<Book>) => {
     setState((s) => {
       const oldBook = s.books.find(b => b.id === id);
@@ -541,8 +544,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // If updating content, track character progress
       if (updates.canvasContent !== undefined && oldBook) {
-        const oldLen = getCanvasChaptersLength(oldBook.canvasContent || '');
+        // Use cached length for oldLen, compute newLen and cache it
+        const cacheKey = `book_${id}`;
+        let oldLen = canvasLengthCache.current[cacheKey];
+        if (oldLen === undefined) {
+          oldLen = getCanvasChaptersLength(oldBook.canvasContent || '');
+        }
         const newLen = getCanvasChaptersLength(updates.canvasContent);
+        canvasLengthCache.current[cacheKey] = newLen;
+
         const delta = newLen - oldLen;
 
         if (delta > 0) {

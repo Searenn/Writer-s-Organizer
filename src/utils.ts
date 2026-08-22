@@ -11,28 +11,42 @@ export function generateId() {
 
 export function getTextLength(html: string): number {
   if (!html) return 0;
-  const temp = document.createElement('div');
-  temp.innerHTML = html;
-  return (temp.textContent || temp.innerText || '').length;
+  return stripHtmlTags(html).length;
+}
+
+/** Fast HTML entity decoding without DOM */
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#039;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+/** Strip HTML tags and decode entities — pure string ops, no DOM */
+function stripHtmlTags(html: string): string {
+  // Replace <br> and block-level closing tags with newlines for accurate counting
+  let text = html.replace(/<br\s*\/?>/gi, '\n');
+  // Strip all remaining tags
+  text = text.replace(/<[^>]*>/g, '');
+  // Decode HTML entities
+  text = decodeHtmlEntities(text);
+  return text;
 }
 
 export function getCanvasChaptersLength(html: string): number {
   if (!html) return 0;
-  const temp = document.createElement('div');
-  temp.innerHTML = html;
+  // Find the first heading tag — we count from there to the end
+  const firstHeadingMatch = html.match(/<h[1-6][^>]*>/i);
+  if (!firstHeadingMatch) return 0;
 
-  const headings = Array.from(temp.querySelectorAll('h1, h2, h3, h4, h5, h6'));
-  if (headings.length === 0) return 0; // If there are no headings, there are no chapters.
-
-  // Count exactly from the first heading to the end
-  const range = document.createRange();
-  range.setStartBefore(headings[0]);
-  range.setEnd(temp, temp.childNodes.length);
-
-  const fragment = range.cloneContents();
-  const wrapper = document.createElement('div');
-  wrapper.appendChild(fragment);
-  return (wrapper.textContent || wrapper.innerText || '').length;
+  const fromFirstHeading = html.substring(firstHeadingMatch.index!);
+  return stripHtmlTags(fromFirstHeading).length;
 }
 
 export function getLocalISODate(date: Date = new Date()): string {
