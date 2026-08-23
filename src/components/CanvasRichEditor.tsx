@@ -1023,21 +1023,24 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
     // Handle paste
     const handlePaste = (e: React.ClipboardEvent, _chapterIndex?: number) => {
-        e.preventDefault();
-        const html = e.clipboardData.getData('text/html');
-        const text = e.clipboardData.getData('text/plain');
-
         const sel = window.getSelection();
         const activeEditor = viewMode === 'all' && _chapterIndex !== undefined
             ? chapterEditorRefs.current[_chapterIndex]
             : singleEditorRef.current;
         if (!sel || !sel.rangeCount || !activeEditor) return;
+
+        e.preventDefault();
+        const html = e.clipboardData.getData('text/html');
+        const text = e.clipboardData.getData('text/plain');
+
+        if (!text && !html) return;
+
         const range = sel.getRangeAt(0);
 
         let heading: HTMLElement | null = null;
         let current: Node | null = range.startContainer;
         while (current && current !== activeEditor) {
-            if (current instanceof HTMLElement && current.tagName === 'H2') {
+            if (current instanceof HTMLElement && (current.tagName === 'H2' || current.tagName === HEADING_TAG)) {
                 heading = current;
                 break;
             }
@@ -1046,41 +1049,37 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
         if (heading) {
             const rawText = text || '';
-            const lines = rawText.split(/\r?\n/).map(l => l.trim());
-            const firstLine = lines[0] || '';
-            const otherLines = lines.slice(1).filter(l => l.length > 0 || lines.indexOf(l) !== 0);
+            const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
 
-            if (firstLine) {
-                document.execCommand('insertText', false, firstLine);
-            }
+            if (lines.length > 0) {
+                document.execCommand('insertText', false, lines[0]);
 
-            if (otherLines.length > 0) {
-                const cleanHtml = otherLines.map(line => {
-                    const trimmed = line.trim();
-                    return trimmed ? `<div>${escapeHtml(trimmed)}</div>` : '<div><br></div>';
-                }).join('');
+                if (lines.length > 1) {
+                    const otherLines = lines.slice(1);
+                    const cleanHtml = otherLines.map(line => `<div>${escapeHtml(line)}</div>`).join('');
 
-                const afterRange = document.createRange();
-                afterRange.setStartAfter(heading);
-                afterRange.collapse(true);
+                    const afterRange = document.createRange();
+                    afterRange.setStartAfter(heading);
+                    afterRange.collapse(true);
 
-                const tempDiv = document.createElement('div');
-                tempDiv.innerHTML = cleanHtml;
+                    const tempDiv = document.createElement('div');
+                    tempDiv.innerHTML = cleanHtml;
 
-                const fragment = document.createDocumentFragment();
-                while (tempDiv.firstChild) {
-                    fragment.appendChild(tempDiv.firstChild);
-                }
+                    const fragment = document.createDocumentFragment();
+                    while (tempDiv.firstChild) {
+                        fragment.appendChild(tempDiv.firstChild);
+                    }
 
-                afterRange.insertNode(fragment);
+                    const lastChild = fragment.lastChild;
+                    afterRange.insertNode(fragment);
 
-                const lastInserted = fragment.lastChild || tempDiv.lastChild;
-                if (lastInserted) {
-                    const newSelRange = document.createRange();
-                    newSelRange.selectNodeContents(lastInserted);
-                    newSelRange.collapse(false);
-                    sel.removeAllRanges();
-                    sel.addRange(newSelRange);
+                    if (lastChild) {
+                        const newSelRange = document.createRange();
+                        newSelRange.selectNodeContents(lastChild);
+                        newSelRange.collapse(false);
+                        sel.removeAllRanges();
+                        sel.addRange(newSelRange);
+                    }
                 }
             }
         } else {
@@ -1108,17 +1107,19 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                     el.removeAttribute('class');
                 });
 
-                temp.querySelectorAll('div:empty').forEach(el => el.remove());
+                temp.querySelectorAll('script, style, iframe, meta, link').forEach(el => el.remove());
 
-                document.execCommand('insertHTML', false, temp.innerHTML);
+                const sanitized = temp.innerHTML.trim();
+                if (sanitized) {
+                    const success = document.execCommand('insertHTML', false, sanitized);
+                    if (!success && text) {
+                        document.execCommand('insertText', false, text);
+                    }
+                } else if (text) {
+                    document.execCommand('insertText', false, text);
+                }
             } else if (text) {
-                const textLines = text.split(/\r?\n/);
-                const cleanHtml = textLines.map(line => {
-                    const trimmed = line.trim();
-                    return trimmed ? `<div>${escapeHtml(trimmed)}</div>` : '<div><br></div>';
-                }).join('');
-
-                document.execCommand('insertHTML', false, cleanHtml);
+                document.execCommand('insertText', false, text);
             }
         }
 
@@ -1152,7 +1153,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         let heading: HTMLElement | null = null;
         let current: Node | null = node;
         while (current && current !== activeEditor) {
-            if (current instanceof HTMLElement && current.tagName === HEADING_TAG) {
+            if (current instanceof HTMLElement && (current.tagName === 'H2' || current.tagName === HEADING_TAG)) {
                 heading = current;
                 break;
             }
@@ -1172,7 +1173,11 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             sel.removeAllRanges();
             sel.addRange(newRange);
         } else {
-            document.execCommand('formatBlock', false, HEADING_TAG);
+            try {
+                document.execCommand('formatBlock', false, 'H2');
+            } catch (_) {
+                document.execCommand('formatBlock', false, '<h2>');
+            }
         }
 
         activeEditor.focus();
@@ -1223,11 +1228,6 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                     if (newIdx !== null && singleEditorRef.current) {
                         singleEditorRef.current.innerHTML = extractChapterHtml(newFullHtml, newIdx);
                     }
-                } else {
-                    lastChapterIdx.current = selectedChapterIndex;
-                    if (singleEditorRef.current) {
-                        singleEditorRef.current.innerHTML = extractChapterHtml(newFullHtml, selectedChapterIndex);
-                    }
                 }
             }
             isEditing.current = false;
@@ -1240,14 +1240,16 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             ? Object.values(chapterEditorRefs.current).find(el => el && el.contains(sel?.anchorNode || null))
             : singleEditorRef.current;
         if (!sel || !sel.rangeCount || !activeEditor) return;
-        const range = sel.getRangeAt(0).cloneRange();
 
         document.execCommand(command, false, value);
+        activeEditor.focus();
+        isEditing.current = true;
 
-        try {
-            sel.removeAllRanges();
-            sel.addRange(range);
-        } catch (_) {}
+        if (viewMode === 'all') {
+            saveToStoreAllRef.current();
+        } else {
+            saveToStoreSingleRef.current();
+        }
     };
 
     const formatBold = () => { execPreservingSelection('bold'); };
@@ -1655,6 +1657,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             <div className="absolute top-4 right-10 z-20 flex gap-1 bg-zinc-900/90 py-1.5 px-2 rounded-xl border border-zinc-800/80 shadow-lg backdrop-blur-md flex-wrap items-center transition-all duration-300">
                 {!showToolbar ? (
                     <button
+                        onMouseDown={(e) => e.preventDefault()}
                         onClick={toggleToolbar}
                         className="flex items-center justify-center p-1.5 text-zinc-400 hover:text-emerald-400 rounded-lg transition-all"
                         title="Показать панель форматирования"
@@ -1664,6 +1667,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                 ) : (
                     <>
                         <button
+                            onMouseDown={(e) => e.preventDefault()}
                             onClick={toggleToolbar}
                             className="flex items-center justify-center p-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all"
                             title="Скрыть панель форматирования"
@@ -1672,6 +1676,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                         </button>
                         <div className="w-px h-5 bg-zinc-800 self-center mx-0.5" />
                         <button
+                            onMouseDown={(e) => e.preventDefault()}
                             onClick={toggleHeading}
                             className="flex items-center gap-1 px-2 py-1.5 text-zinc-300 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm font-medium"
                             title="Заголовок (тогл)"
@@ -1679,17 +1684,17 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                             <Heading className="w-4 h-4" />
                         </button>
                 <div className="w-px h-5 bg-zinc-800 self-center" />
-                <button onClick={formatBold} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm font-bold" title="Жирный (Ctrl+B)"><Bold className="w-4 h-4" /></button>
-                <button onClick={formatItalic} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm italic" title="Курсив (Ctrl+I)"><Italic className="w-4 h-4" /></button>
-                <button onClick={formatUnderline} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Подчёркнутый (Ctrl+U)"><Underline className="w-4 h-4" /></button>
-                <button onClick={formatStrikethrough} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Зачёркнутый"><Strikethrough className="w-4 h-4" /></button>
+                <button onMouseDown={(e) => e.preventDefault()} onClick={formatBold} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm font-bold" title="Жирный (Ctrl+B)"><Bold className="w-4 h-4" /></button>
+                <button onMouseDown={(e) => e.preventDefault()} onClick={formatItalic} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm italic" title="Курсив (Ctrl+I)"><Italic className="w-4 h-4" /></button>
+                <button onMouseDown={(e) => e.preventDefault()} onClick={formatUnderline} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Подчёркнутый (Ctrl+U)"><Underline className="w-4 h-4" /></button>
+                <button onMouseDown={(e) => e.preventDefault()} onClick={formatStrikethrough} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Зачёркнутый"><Strikethrough className="w-4 h-4" /></button>
                 <div className="relative">
-                    <button onClick={() => { setShowHighlightMenu(m => !m); setShowFontMenu(false); setShowSizeMenu(false); setShowLineHeightMenu(false); }} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Маркер (Выделить текст)">
+                    <button onMouseDown={(e) => e.preventDefault()} onClick={() => { setShowHighlightMenu(m => !m); setShowFontMenu(false); setShowSizeMenu(false); setShowLineHeightMenu(false); }} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Маркер (Выделить текст)">
                         <Highlighter className="w-4 h-4" /><ChevronDown className="w-3 h-3 animate-pulse" />
                     </button>
                     {showHighlightMenu && (
                         <div className="absolute top-full right-0 mt-1 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl p-2.5 min-w-[200px] z-50 space-y-1.5 animate-in fade-in slide-in-from-top-1 duration-150">
-                            <div className="text-[10px] font-bold text-zinc-505 uppercase tracking-wider mb-1 px-1">Цвет маркера</div>
+                            <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-1 px-1">Цвет маркера</div>
                             {HIGHLIGHT_OPTIONS.map(opt => (
                                 <button key={opt.label} onMouseDown={(e) => { e.preventDefault(); applyHighlight(opt.value); setShowHighlightMenu(false); }} className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs text-zinc-300 hover:bg-zinc-800 hover:text-emerald-400 transition-colors text-left font-medium">
                                     <div className={cn("w-4 h-4 rounded-full border border-zinc-800 shrink-0", opt.colorClass)} />
@@ -1701,16 +1706,16 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                 </div>
                 <div className="w-px h-5 bg-zinc-800 self-center" />
                 <div className="relative">
-                    <button onClick={() => { setShowFontMenu(m => !m); setShowSizeMenu(false); setShowLineHeightMenu(false); setShowHighlightMenu(false); }} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-xs" title="Шрифт"><Type className="w-3.5 h-3.5" /><ChevronDown className="w-3 h-3" /></button>
+                    <button onMouseDown={(e) => e.preventDefault()} onClick={() => { setShowFontMenu(m => !m); setShowSizeMenu(false); setShowLineHeightMenu(false); setShowHighlightMenu(false); }} className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-xs" title="Шрифт"><Type className="w-3.5 h-3.5" /><ChevronDown className="w-3 h-3" /></button>
                     {showFontMenu && (<div className="absolute top-full right-0 mt-1 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl py-1 min-w-[180px] max-h-[280px] overflow-y-auto z-50">{FONT_OPTIONS.map(f => (<button key={f.label} onMouseDown={(e) => { e.preventDefault(); applyFontFamily(f.value || 'inherit'); setShowFontMenu(false); }} className="w-full text-left px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-emerald-400 transition-colors" style={{ fontFamily: f.value || 'inherit' }}>{f.label}</button>))}</div>)}
                 </div>
                 <div className="relative">
-                    <button onClick={() => { setShowSizeMenu(m => !m); setShowFontMenu(false); setShowLineHeightMenu(false); setShowHighlightMenu(false); }} className="flex items-center gap-0.5 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-xs tabular-nums" title="Размер шрифта"><span className="text-[10px] font-bold">Aa</span><ChevronDown className="w-3 h-3" /></button>
+                    <button onMouseDown={(e) => e.preventDefault()} onClick={() => { setShowSizeMenu(m => !m); setShowFontMenu(false); setShowLineHeightMenu(false); setShowHighlightMenu(false); }} className="flex items-center gap-0.5 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-xs tabular-nums" title="Размер шрифта"><span className="text-[10px] font-bold">Aa</span><ChevronDown className="w-3 h-3" /></button>
                     {showSizeMenu && (<div className="absolute top-full right-0 mt-1 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl py-1 min-w-[80px] z-50">{SIZE_OPTIONS.map(s => (<button key={s.label} onMouseDown={(e) => { e.preventDefault(); applyFontSize(s.value); setShowSizeMenu(false); }} className="w-full text-left px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-emerald-400 transition-colors">{s.label}px</button>))}</div>)}
                 </div>
                 <div className="relative">
-                    <button onClick={() => { setShowLineHeightMenu(m => !m); setShowFontMenu(false); setShowSizeMenu(false); setShowHighlightMenu(false); }} className="flex items-center gap-0.5 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-xs" title="Межстрочный интервал">
-                        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="21" y1="6" x2="3" y2="6" /><line x1="21" y1="12" x2="3" y2="12" /><line x1="21" y1="18" x2="3" y2="18" /></svg>
+                    <button onMouseDown={(e) => e.preventDefault()} onClick={() => { setShowLineHeightMenu(m => !m); setShowFontMenu(false); setShowSizeMenu(false); setShowHighlightMenu(false); }} className="flex items-center gap-0.5 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-xs" title="Межстрочный интервал">
+                        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="21" y1="6" x2="3" y2="6" /><line x1="21" y1="18" x2="3" y2="18" /></svg>
                         <ChevronDown className="w-3 h-3" />
                     </button>
                     {showLineHeightMenu && (<div className="absolute top-full right-0 mt-1 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl py-1 min-w-[90px] z-50">{LINE_HEIGHT_OPTIONS.map(lh => (<button key={lh.label} onMouseDown={(e) => { e.preventDefault(); applyLineHeight(lh.value); setShowLineHeightMenu(false); }} className="w-full text-left px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-emerald-400 transition-colors">{lh.label}×</button>))}</div>)}
@@ -1718,23 +1723,23 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                 <div className="w-px h-5 bg-zinc-800 self-center" />
                 {viewMode === 'single' ? (
                     <>
-                        <button onClick={handleCopyHeading} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Копировать заголовок">
+                        <button onMouseDown={(e) => e.preventDefault()} onClick={handleCopyHeading} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Копировать заголовок">
                             {copiedType === 'heading' ? (<><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Название</span></>) : (<><Heading className="w-4 h-4" /><span className="hidden sm:inline">Название</span></>)}
                         </button>
-                        <button onClick={handleCopyChapterText} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title={contentType === 'characters' ? "Копировать описание" : contentType === 'annotation' ? "Копировать аннотацию" : contentType === 'short_description' ? "Копировать краткое описание" : contentType === 'chapter_plan' ? "Копировать план главы" : "Копировать текст главы"}>
+                        <button onMouseDown={(e) => e.preventDefault()} onClick={handleCopyChapterText} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title={contentType === 'characters' ? "Копировать описание" : contentType === 'annotation' ? "Копировать аннотацию" : contentType === 'short_description' ? "Копировать краткое описание" : contentType === 'chapter_plan' ? "Копировать план главы" : "Копировать текст главы"}>
                             {copiedType === 'text' ? (<><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Текст</span></>) : (<><FileText className="w-4 h-4" /><span className="hidden sm:inline">Текст</span></>)}
                         </button>
-                        <button onClick={handleCopy} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title={contentType === 'characters' ? "Копировать карточку" : contentType === 'annotation' ? "Копировать аннотацию" : contentType === 'short_description' ? "Копировать краткое описание" : contentType === 'chapter_plan' ? "Копировать план главы" : "Копировать главу"}>
+                        <button onMouseDown={(e) => e.preventDefault()} onClick={handleCopy} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title={contentType === 'characters' ? "Копировать карточку" : contentType === 'annotation' ? "Копировать аннотацию" : contentType === 'short_description' ? "Копировать краткое описание" : contentType === 'chapter_plan' ? "Копировать план главы" : "Копировать главу"}>
                             {copiedType === 'chapter' ? (<><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">{contentType === 'characters' ? "Персонаж" : contentType === 'annotation' ? "Аннотация" : contentType === 'short_description' ? "Описание" : contentType === 'chapter_plan' ? "План главы" : "Вся глава"}</span></>) : (<><Copy className="w-4 h-4" /><span className="hidden sm:inline">{contentType === 'characters' ? "Персонаж" : contentType === 'annotation' ? "Аннотация" : contentType === 'short_description' ? "Описание" : contentType === 'chapter_plan' ? "План главы" : "Вся глава"}</span></>)}
                         </button>
                         {contentType !== 'characters' && contentType !== 'annotation' && contentType !== 'short_description' && contentType !== 'chapter_plan' && chapters[selectedChapterIndex!]?.scheduledDate && (
-                            <button onClick={handleCopyDateTime} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-amber-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Копировать дату и время выкладки">
+                            <button onMouseDown={(e) => e.preventDefault()} onClick={handleCopyDateTime} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-amber-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Копировать дату и время выкладки">
                                 {copiedType === 'datetime' ? (<><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Дата</span></>) : (<><Clock className="w-4 h-4" /><span className="hidden sm:inline">Дата</span></>)}
                             </button>
                         )}
                     </>
                 ) : (
-                    <button onClick={handleCopyAll} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Копировать всё">
+                    <button onMouseDown={(e) => e.preventDefault()} onClick={handleCopyAll} className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 rounded-lg transition-all text-sm" title="Копировать всё">
                         {copiedType === 'all' ? (<><CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="hidden sm:inline text-emerald-400">Скопировано</span></>) : (<><Copy className="w-4 h-4" /><span className="hidden sm:inline">Всё</span></>)}
                     </button>
                 )}
