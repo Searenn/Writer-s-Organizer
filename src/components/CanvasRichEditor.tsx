@@ -1156,7 +1156,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         let heading: HTMLElement | null = null;
         let current: Node | null = node;
         while (current && current !== activeEditor) {
-            if (current instanceof HTMLElement && (current.tagName === 'H2' || current.tagName === HEADING_TAG)) {
+            if (current instanceof HTMLElement && current.tagName === HEADING_TAG) {
                 heading = current;
                 break;
             }
@@ -1176,11 +1176,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             sel.removeAllRanges();
             sel.addRange(newRange);
         } else {
-            try {
-                document.execCommand('formatBlock', false, 'H2');
-            } catch (_) {
-                document.execCommand('formatBlock', false, '<h2>');
-            }
+            document.execCommand('formatBlock', false, HEADING_TAG);
         }
 
         activeEditor.focus();
@@ -1232,6 +1228,11 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                     if (newIdx !== null && singleEditorRef.current) {
                         singleEditorRef.current.innerHTML = extractChapterHtml(newFullHtml, newIdx);
                     }
+                } else {
+                    lastChapterIdx.current = selectedChapterIndex;
+                    if (singleEditorRef.current) {
+                        singleEditorRef.current.innerHTML = extractChapterHtml(newFullHtml, selectedChapterIndex);
+                    }
                 }
             }
             isEditing.current = false;
@@ -1244,16 +1245,14 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             ? Object.values(chapterEditorRefs.current).find(el => el && el.contains(sel?.anchorNode || null))
             : singleEditorRef.current;
         if (!sel || !sel.rangeCount || !activeEditor) return;
+        const range = sel.getRangeAt(0).cloneRange();
 
         document.execCommand(command, false, value);
-        activeEditor.focus();
-        isEditing.current = true;
 
-        if (viewMode === 'all') {
-            saveToStoreAllRef.current();
-        } else {
-            saveToStoreSingleRef.current();
-        }
+        try {
+            sel.removeAllRanges();
+            sel.addRange(range);
+        } catch (_) {}
     };
 
     const formatBold = () => { execPreservingSelection('bold'); };
