@@ -258,16 +258,19 @@ const VirtualChapterBlock = React.memo(forwardRef<HTMLDivElement, VirtualChapter
 
     // Set content when becoming visible or when html changes externally
     useEffect(() => {
-        if (isVisible && editorRef.current) {
-            if (!isEditingRef.current) {
+        if (editorRef.current) {
+            if (!isEditingRef.current || editorRef.current.innerHTML !== html) {
                 editorRef.current.innerHTML = html;
+                isEditingRef.current = false;
             }
-            // Measure height after render
-            requestAnimationFrame(() => {
-                if (containerRef.current) {
-                    onHeightMeasured(index, containerRef.current.offsetHeight);
-                }
-            });
+            if (isVisible) {
+                // Measure height after render
+                requestAnimationFrame(() => {
+                    if (containerRef.current) {
+                        onHeightMeasured(index, containerRef.current.offsetHeight);
+                    }
+                });
+            }
         }
     }, [isVisible, html, index, onHeightMeasured]);
 
@@ -613,8 +616,8 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             chapterHtmlsRef.current = splitChapters;
             setChapterHtmls(splitChapters);
             chapterDirtyRef.current.clear();
-            // Reset visibility for new content
-            setVisibleChapters(new Set());
+            // Ensure all chapters are visible initially
+            setVisibleChapters(new Set(splitChapters.map((_, i) => i)));
         } else if (viewMode === 'single' && selectedChapterIndex !== null && singleEditorRef.current) {
             singleEditorRef.current.innerHTML = extractChapterHtml(html, selectedChapterIndex);
         } else if (singleEditorRef.current) {
@@ -1200,6 +1203,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                 // Re-split and update state
                 const newSplit = splitHtmlIntoChapters(assembledHtml);
                 chapterHtmlsRef.current = newSplit;
+                setVisibleChapters(new Set(newSplit.map((_, i) => i)));
                 setChapterHtmls(newSplit);
 
                 const parsed = parseChaptersFromHtml(assembledHtml);
@@ -1811,7 +1815,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                         ) : (
                             chapterHtmls.map((chHtml, idx) => (
                                 <VirtualChapterBlock
-                                    key={`ch-${idx}-${chapterHtmls.length}`}
+                                    key={`ch-block-${idx}`}
                                     index={idx}
                                     html={chHtml}
                                     isVisible={visibleChapters.has(idx)}
