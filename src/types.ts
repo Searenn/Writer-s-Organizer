@@ -210,6 +210,59 @@ export type ScheduledTask = {
 
 export type AppTheme = 'mystic-dark' | 'nordic-light' | 'warm-sepia' | 'midnight-obsidian' | 'forest-emerald';
 
+export type BookTab = 'info' | 'chapters' | 'schedule' | 'ads' | 'mood';
+export type CompanionPanelType = 'plan' | 'characters' | 'settings' | 'notes' | 'schedule';
+
+export type BookWorkspaceState = {
+  activeTab?: BookTab;
+  viewMode?: 'single' | 'all';
+  selectedChapterIndex?: number | null;
+  scrollTop?: number;
+  cursorChapterIndex?: number | null;
+  cursorOffset?: number;
+  companionPanel?: CompanionPanelType | null;
+  companionWidth?: number;
+  updatedAt?: number;
+};
+
+export type BookRecoveryPayload = {
+  book: Book;
+  account?: Account;
+  series?: Series[];
+  chapters: Chapter[];
+  characters: Character[];
+  settings: Setting[];
+  notes: Note[];
+  prompts: Prompt[];
+  moodBoardItems: MoodBoardItem[];
+  workspace?: BookWorkspaceState;
+};
+
+export type BookVersionMeta = {
+  id: string;
+  bookId: string;
+  bookTitle: string;
+  createdAt: number;
+  label: string;
+  automatic: boolean;
+  contentHash: string;
+  charCount: number;
+  chapterCount: number;
+  chunkCount: number;
+};
+
+export type TrashItemType = 'book' | 'chapter' | 'note';
+
+export type TrashItemMeta = {
+  id: string;
+  type: TrashItemType;
+  originalId: string;
+  title: string;
+  deletedAt: number;
+  expiresAt: number;
+  chunkCount: number;
+};
+
 export type AppState = {
   accounts: Account[];
   books: Book[];
@@ -235,5 +288,7 @@ export type AppState = {
   pomodoroSettings?: PomodoroSettings;
   moodBoardVersion?: number;
   scheduledTasks: ScheduledTask[];
+  bookWorkspaces: Record<string, BookWorkspaceState>;
+  bookVersions: BookVersionMeta[];
+  trashItems: TrashItemMeta[];
 };
-

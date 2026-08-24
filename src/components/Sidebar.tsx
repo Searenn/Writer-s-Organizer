@@ -14,6 +14,7 @@ const ALL_NAV_ITEMS = [
   { id: 'calendar', label: 'Календарь', icon: Calendar },
   { id: 'stats', label: 'Статистика', icon: TrendingUp },
   { id: 'finance', label: 'Финансы', icon: DollarSign },
+  { id: 'trash', label: 'Корзина', icon: Trash2 },
 ] as const;
 
 type SidebarProps = {
@@ -251,8 +252,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const handleDeleteAccount = (id: string, name: string) => {
-    if (window.confirm(`Вы уверены, что хотите удалить аккаунт "${name}" и все его книги?`)) {
-      deleteAccount(id);
+    if (window.confirm(`Удалить аккаунт «${name}»? Его книги будут перемещены в корзину на 30 дней.`)) {
+      void deleteAccount(id).catch(error => window.alert(error.message || 'Не удалось удалить аккаунт'));
     }
   };
 
@@ -496,10 +497,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       return (
                         <button
                           key={book.id}
-                          onClick={() => {
-                            setCurrentView('book');
-                            setSelectedBookId(book.id);
-                          }}
+                          onClick={() => onSelectBook(book.id)}
                           className={cn(
                             'w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-xs transition-all pl-3 border border-transparent group',
                             selectedBookId === book.id
@@ -795,4 +793,3 @@ export const Sidebar: React.FC<SidebarProps> = ({
     </div>
   );
 };
-

@@ -45,7 +45,7 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
     isOpen: boolean;
     title: string;
     message: string;
-    onConfirm: () => void;
+    onConfirm: () => void | Promise<void>;
   }>({
     isOpen: false,
     title: '',
@@ -762,7 +762,7 @@ export const Dashboard: React.FC<{ onSelectBook: (id: string) => void }> = ({ on
                         setConfirmModal({
                           isOpen: true,
                           title: 'Удалить книгу?',
-                          message: `Вы уверены, что хотите удалить книгу "${book.title}"? Все главы и данные будут потеряны.`,
+                          message: `Книга «${book.title}» со всеми главами будет перемещена в корзину на 30 дней.`,
                           onConfirm: () => deleteBook(book.id),
                         });
                       }}

@@ -13,20 +13,25 @@ import { NotesView } from './components/NotesView';
 import { KanbanView } from './components/KanbanView';
 import { PomodoroWidget } from './components/PomodoroWidget';
 import { TasksView } from './components/TasksView';
+import { TrashView } from './components/TrashView';
 import { LoginScreen } from './components/LoginScreen';
 import { AppProvider, useAppStore } from './store';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { BookTab } from './types';
 
 function AppContent() {
   const [currentView, setCurrentView] = useState('dashboard');
   const [selectedBookId, setSelectedBookId] = useState<string | null>(null);
-  const [activeBookTab, setActiveBookTab] = useState<string>('chapters');
+  const [activeBookTab, setActiveBookTab] = useState<BookTab>('chapters');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-  const { isLoading } = useAppStore();
+  const { state, isLoading, updateBookWorkspace } = useAppStore();
 
-  const handleSelectBook = (id: string, tab: string = 'chapters') => {
+  const handleSelectBook = (id: string, tab?: string) => {
+    const restoredTab = state.bookWorkspaces?.[id]?.activeTab || 'chapters';
+    const nextTab = (tab || restoredTab) as BookTab;
     setSelectedBookId(id);
-    setActiveBookTab(tab);
+    setActiveBookTab(nextTab);
+    updateBookWorkspace(id, { activeTab: nextTab });
     setCurrentView('book');
     setIsMobileSidebarOpen(false);
   };
@@ -139,11 +144,19 @@ function AppContent() {
               <KanbanView onSelectBook={handleSelectBook} />
             </div>
           )}
+          {currentView === 'trash' && !selectedBookId && (
+            <div className="h-full overflow-y-auto">
+              <TrashView />
+            </div>
+          )}
           {currentView === 'book' && selectedBookId && (
             <BookView
               bookId={selectedBookId}
-              activeTab={activeBookTab as any}
-              onTabChange={setActiveBookTab}
+              activeTab={activeBookTab}
+              onTabChange={(tab) => {
+                setActiveBookTab(tab);
+                updateBookWorkspace(selectedBookId, { activeTab: tab });
+              }}
             />
           )}
         </main>

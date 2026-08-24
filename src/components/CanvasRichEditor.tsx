@@ -18,6 +18,14 @@ type Props = {
     selectedChapterIndex: number | null;
     onChaptersChange: (chapters: CanvasChapter[]) => void;
     onActiveChapterChange?: (index: number | null) => void;
+    initialScrollTop?: number;
+    initialCursorChapterIndex?: number | null;
+    initialCursorOffset?: number;
+    onPositionChange?: (position: {
+        scrollTop: number;
+        cursorChapterIndex: number | null;
+        cursorOffset: number;
+    }) => void;
     contentType?: 'chapters' | 'characters' | 'annotation' | 'short_description' | 'chapter_plan';
 };
 
@@ -27,6 +35,38 @@ export type CanvasRichEditorHandle = {
 
 const HEADING_TAG = 'H2';
 const HEADING_SELECTOR = 'h2';
+
+function getCursorOffset(root: HTMLElement, range: Range): number {
+    try {
+        const before = range.cloneRange();
+        before.selectNodeContents(root);
+        before.setEnd(range.startContainer, range.startOffset);
+        return before.toString().length;
+    } catch {
+        return 0;
+    }
+}
+
+function setCursorOffset(root: HTMLElement, offset: number): void {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let remaining = Math.max(0, offset);
+    let node = walker.nextNode();
+    while (node) {
+        const length = node.textContent?.length || 0;
+        if (remaining <= length) {
+            const range = document.createRange();
+            range.setStart(node, remaining);
+            range.collapse(true);
+            const selection = window.getSelection();
+            selection?.removeAllRanges();
+            selection?.addRange(range);
+            root.focus({ preventScroll: true });
+            return;
+        }
+        remaining -= length;
+        node = walker.nextNode();
+    }
+}
 
 // ─── Fast regex-based chapter parsing (no DOM) ─────────────────────────────
 
@@ -397,7 +437,7 @@ VirtualChapterBlock.displayName = 'VirtualChapterBlock';
 
 // ─── Main Editor Component ─────────────────────────────────────────────────
 
-export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ bookId, viewMode, selectedChapterIndex, onChaptersChange, onActiveChapterChange, contentType = 'chapters' }, ref) => {
+export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ bookId, viewMode, selectedChapterIndex, onChaptersChange, onActiveChapterChange, initialScrollTop = 0, initialCursorChapterIndex = null, initialCursorOffset = 0, onPositionChange, contentType = 'chapters' }, ref) => {
     const { state, updateBook, syncCharactersFromHtml } = useAppStore();
     const book = state.books.find(b => b.id === bookId);
     const chapters = state.chapters.filter(c => c.bookId === bookId).sort((a, b) => a.order - b.order);
@@ -428,6 +468,42 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     const [chapterObserver, setChapterObserver] = useState<IntersectionObserver | null>(null);
     const saveTimeoutRef = useRef<any>(null);
     const chapterDirtyRef = useRef<Set<number>>(new Set());
+    const positionTimeoutRef = useRef<number | null>(null);
+    const restoredPositionKeyRef = useRef<string | null>(null);
+    const onPositionChangeRef = useRef(onPositionChange);
+    useEffect(() => { onPositionChangeRef.current = onPositionChange; }, [onPositionChange]);
+
+    const schedulePositionSave = useCallback(() => {
+        if (!onPositionChangeRef.current) return;
+        if (positionTimeoutRef.current !== null) window.clearTimeout(positionTimeoutRef.current);
+        positionTimeoutRef.current = window.setTimeout(() => {
+            const scrollEl = scrollContainerRef.current;
+            if (!scrollEl) return;
+            const selection = window.getSelection();
+            const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+            let cursorChapterIndex = viewMode === 'single' ? selectedChapterIndex : null;
+            let editorRoot: HTMLElement | null = viewMode === 'single' ? singleEditorRef.current : null;
+
+            if (viewMode === 'all' && range) {
+                const element = range.startContainer.nodeType === Node.ELEMENT_NODE
+                    ? range.startContainer as Element
+                    : range.startContainer.parentElement;
+                const chapterContainer = element?.closest('[data-chapter-index]') as HTMLElement | null;
+                if (chapterContainer) {
+                    cursorChapterIndex = Number(chapterContainer.dataset.chapterIndex);
+                    editorRoot = chapterContainer.querySelector('[contenteditable="true"]') as HTMLElement | null;
+                }
+            }
+
+            onPositionChangeRef.current?.({
+                scrollTop: scrollEl.scrollTop,
+                cursorChapterIndex,
+                cursorOffset: range && editorRoot && editorRoot.contains(range.startContainer)
+                    ? getCursorOffset(editorRoot, range)
+                    : 0,
+            });
+        }, 300);
+    }, [selectedChapterIndex, viewMode]);
 
     const [showToolbar, setShowToolbar] = useState(() => {
         try {
@@ -648,6 +724,52 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             singleEditorRef.current.innerHTML = canvasContentRef.current;
         }
     }, [viewMode, chapterHtmls.length, bookId]);
+
+    // Restore the last scroll/cursor position once after opening this book/mode.
+    useEffect(() => {
+        const key = `${bookId}:${viewMode}:${selectedChapterIndex ?? 'all'}`;
+        if (restoredPositionKeyRef.current === key) return;
+        const scrollEl = scrollContainerRef.current;
+        if (!scrollEl) return;
+        restoredPositionKeyRef.current = key;
+
+        const scrollTimer = window.setTimeout(() => {
+            scrollEl.scrollTop = Math.max(0, initialScrollTop);
+        }, 40);
+        const cursorTimer = window.setTimeout(() => {
+            const chapterIndex = initialCursorChapterIndex ?? selectedChapterIndex;
+            const editor = viewMode === 'all' && chapterIndex !== null
+                ? chapterEditorRefs.current[chapterIndex]
+                : singleEditorRef.current;
+            if (editor) setCursorOffset(editor, initialCursorOffset);
+        }, 350);
+        return () => {
+            window.clearTimeout(scrollTimer);
+            window.clearTimeout(cursorTimer);
+        };
+    }, [bookId, chapterHtmls.length, selectedChapterIndex, viewMode]);
+
+    useEffect(() => {
+        const handleSelectionChange = () => {
+            const selection = window.getSelection();
+            if (!selection?.rangeCount || !scrollContainerRef.current?.contains(selection.anchorNode)) return;
+            schedulePositionSave();
+        };
+        document.addEventListener('selectionchange', handleSelectionChange);
+        return () => document.removeEventListener('selectionchange', handleSelectionChange);
+    }, [schedulePositionSave]);
+
+    useEffect(() => {
+        if (viewMode === 'all') return;
+        const scrollEl = scrollContainerRef.current;
+        if (!scrollEl) return;
+        scrollEl.addEventListener('scroll', schedulePositionSave, { passive: true });
+        return () => scrollEl.removeEventListener('scroll', schedulePositionSave);
+    }, [schedulePositionSave, viewMode]);
+
+    useEffect(() => () => {
+        if (positionTimeoutRef.current !== null) window.clearTimeout(positionTimeoutRef.current);
+    }, []);
 
     // ── Save to store (single mode) ─────────────────────────────────────────
     const saveToStoreSingle = useCallback(() => {
@@ -1601,11 +1723,12 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             if (scrollTop < 40) { current = null; currentIdx = null; }
             setStickyChapter(current);
             onActiveChapterChangeRef.current?.(currentIdx);
+            schedulePositionSave();
         };
 
         scrollEl.addEventListener('scroll', handleScroll, { passive: true });
         return () => scrollEl.removeEventListener('scroll', handleScroll);
-    }, [viewMode, bookId, chapterHtmls]);
+    }, [viewMode, bookId, chapterHtmls, schedulePositionSave]);
 
     // Font options
     const FONT_OPTIONS = [

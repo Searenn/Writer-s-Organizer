@@ -1,10 +1,10 @@
-import { AlertTriangle, X } from 'lucide-react';
-import React from 'react';
+import { AlertTriangle, Loader2, X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
 
 interface ConfirmationModalProps {
     isOpen: boolean;
     onClose: () => void;
-    onConfirm: () => void;
+    onConfirm: () => void | Promise<void>;
     title: string;
     message: string;
     confirmText?: string;
@@ -22,7 +22,25 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
     cancelText = 'Отмена',
     isDanger = true,
 }) => {
+    const [isConfirming, setIsConfirming] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    useEffect(() => {
+        if (isOpen) setError(null);
+    }, [isOpen]);
     if (!isOpen) return null;
+
+    const handleConfirm = async () => {
+        setIsConfirming(true);
+        setError(null);
+        try {
+            await onConfirm();
+            onClose();
+        } catch (reason: any) {
+            setError(reason.message || 'Не удалось выполнить действие');
+        } finally {
+            setIsConfirming(false);
+        }
+    };
 
     return (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
@@ -43,6 +61,7 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
                     <p className="text-zinc-400 text-sm leading-relaxed mb-8">
                         {message}
                     </p>
+                    {error && <p className="text-red-400 text-xs -mt-5 mb-5">{error}</p>}
 
                     <div className="flex gap-3">
                         <button
@@ -52,16 +71,15 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
                             {cancelText}
                         </button>
                         <button
-                            onClick={() => {
-                                onConfirm();
-                                onClose();
-                            }}
+                            onClick={() => void handleConfirm()}
+                            disabled={isConfirming}
                             className={`flex-1 px-4 py-3 rounded-2xl font-semibold text-white transition-all duration-200 shadow-lg ${isDanger
                                     ? 'bg-red-600 hover:bg-red-700 shadow-red-900/10'
                                     : 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-900/10'
-                                }`}
+                                } disabled:opacity-60 disabled:cursor-wait flex items-center justify-center gap-2`}
                         >
-                            {confirmText}
+                            {isConfirming && <Loader2 className="w-4 h-4 animate-spin" />}
+                            {isConfirming ? 'Подождите…' : confirmText}
                         </button>
                     </div>
                 </div>

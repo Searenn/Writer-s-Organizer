@@ -89,7 +89,7 @@ export const BookInfoTab: React.FC<{ bookId: string }> = ({ bookId }) => {
 
 /* --- Component for Chapter-by-chapter Plan Editor --- */
 const ChapterPlanEditor: React.FC<{ bookId: string }> = ({ bookId }) => {
-    const { state, updateBook } = useAppStore();
+    const { state, updateBook, createBookVersion } = useAppStore();
     const book = state.books.find(b => b.id === bookId);
 
     const [viewMode, setViewMode] = useState<'single' | 'all'>('all');
@@ -147,11 +147,12 @@ const ChapterPlanEditor: React.FC<{ bookId: string }> = ({ bookId }) => {
         setSelectedChapterIndex(null);
     };
 
-    const handleDeleteChapter = () => {
+    const handleDeleteChapter = async () => {
         const index = deleteModal.index;
         if (index === null) return;
         const fullHtml = book?.chapterPlan || '';
         if (fullHtml) {
+            await createBookVersion(bookId, 'Перед удалением пункта плана', false);
             const newHtml = deleteChapterHtml(fullHtml, index);
             updateBook(bookId, { chapterPlan: newHtml });
 

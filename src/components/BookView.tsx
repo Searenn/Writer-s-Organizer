@@ -1,5 +1,5 @@
-import { Calendar, Copy, Download, FileText, Settings, Users, Info, Tag, Palette } from 'lucide-react';
-import React, { useState, useMemo } from 'react';
+import { Calendar, FileText, History, Info, Tag, Palette } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '../store';
 import { cn, canvasHtmlToPlainText, canvasHtmlToFb2, downloadFile } from '../utils';
 import { ChapterEditor } from './ChapterEditor';
@@ -8,27 +8,41 @@ import { BookInfoTab } from './BookInfoTab';
 import { BookAdsTab } from './BookAdsTab';
 import { MoodBoardTab } from './MoodBoardTab';
 import { ColorInput } from './ColorInput';
+import { VersionHistoryPanel } from './VersionHistoryPanel';
 
 export const BookView: React.FC<{
   bookId: string;
   activeTab: 'info' | 'chapters' | 'schedule' | 'ads' | 'mood';
   onTabChange: (tab: 'info' | 'chapters' | 'schedule' | 'ads' | 'mood') => void;
 }> = ({ bookId, activeTab, onTabChange }) => {
-  const { state, updateBook } = useAppStore();
+  const { state, updateBook, createBookVersion } = useAppStore();
   const book = state.books.find((b) => b.id === bookId);
   const [descCopied, setDescCopied] = useState(false);
   const [authorNoteCopied, setAuthorNoteCopied] = useState(false);
   const [fileExportStatus, setFileExportStatus] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const createVersionRef = useRef(createBookVersion);
+  createVersionRef.current = createBookVersion;
 
-  if (!book) return <div className="p-8 text-zinc-400">Книга не найдена.</div>;
+  useEffect(() => {
+    const initialTimer = window.setTimeout(() => {
+      void createVersionRef.current(bookId, 'Автосохранение', true).catch(error => console.error('Auto version failed', error));
+    }, 2000);
+    const interval = window.setInterval(() => {
+      void createVersionRef.current(bookId, 'Автосохранение', true).catch(error => console.error('Auto version failed', error));
+    }, 10 * 60 * 1000);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(interval);
+      void createVersionRef.current(bookId, 'Автосохранение при выходе', true).catch(error => console.error('Auto version failed', error));
+    };
+  }, [bookId]);
 
-  const chapters = state.chapters.filter(c => c.bookId === book.id);
-  const characters = state.characters.filter(c => c.bookId === book.id);
-  const settings = state.settings.filter(s => s.bookId === book.id);
+  const chapters = state.chapters.filter(c => c.bookId === bookId);
 
   // Efficiently compute total chars and chapter count using useMemo
   const { totalChars, chapterCount } = useMemo(() => {
-    if (!book.canvasContent) {
+    if (!book?.canvasContent) {
       return {
         totalChars: chapters.reduce((sum, c) => sum + c.content.length, 0),
         chapterCount: chapters.length,
@@ -39,7 +53,9 @@ export const BookView: React.FC<{
     const chars = (temp.innerText || temp.textContent || '').length;
     const count = temp.querySelectorAll('h2').length;
     return { totalChars: chars, chapterCount: count };
-  }, [book.canvasContent, chapters]);
+  }, [book?.canvasContent, chapters]);
+
+  if (!book) return <div className="p-8 text-zinc-400">Книга не найдена.</div>;
 
   const handleExportFile = (format: 'txt' | 'fb2') => {
     if (!book.canvasContent) return;
@@ -145,6 +161,13 @@ export const BookView: React.FC<{
 
         {/* Right Section: Actions */}
         <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+          <button
+            onClick={() => setShowHistory(true)}
+            className="p-1.5 rounded-lg text-zinc-500 hover:text-emerald-400 hover:bg-zinc-900 transition-colors"
+            title="История версий"
+          >
+            <History className="w-4 h-4" />
+          </button>
           <select
             value={book.status}
             onChange={(e) => updateBook(book.id, { status: e.target.value as any })}
@@ -210,6 +233,7 @@ export const BookView: React.FC<{
         {activeTab === 'ads' && <BookAdsTab bookId={book.id} />}
         {activeTab === 'mood' && <MoodBoardTab bookId={book.id} />}
       </div>
+      {showHistory && <VersionHistoryPanel bookId={book.id} onClose={() => setShowHistory(false)} />}
     </div>
   );
 };
