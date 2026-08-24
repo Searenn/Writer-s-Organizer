@@ -1,9 +1,12 @@
 import React, { createContext, useContext, useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { auth } from './lib/firebase';
-import { Account, AdBlock, AppState, AppTheme, Book, Chapter, Character, Credential, DailyEarning, EarningsEntry, FinanceGoal, GoogleTokens, KanbanTask, MoodBoardItem, Note, Platform, PomodoroSession, PomodoroSettings, Prompt, ScheduledTask, Series, Setting } from './types';
+import { Account, AdBlock, AppState, AppTheme, Book, BookRecoveryPayload, BookVersionMeta, BookWorkspaceState, Chapter, Character, Credential, DailyEarning, EarningsEntry, FinanceGoal, GoogleTokens, KanbanTask, MoodBoardItem, Note, Platform, PomodoroSession, PomodoroSettings, Prompt, ScheduledTask, Series, Setting, TrashItemMeta } from './types';
 import { generateId, getTextLength, getCanvasChaptersLength, getLocalISODate } from './utils';
+import { deleteRecoveryPayload, loadRecoveryPayload, saveRecoveryPayload } from './lib/recoveryStorage';
 
 const STORAGE_KEY = 'writer-organizer-state';
+const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_VERSIONS_PER_BOOK = 30;
 
 const initialState: AppState = {
   accounts: [],
@@ -28,7 +31,112 @@ const initialState: AppState = {
   pomodoroSessions: [],
   moodBoardVersion: 2,
   scheduledTasks: [],
+  bookWorkspaces: {},
+  bookVersions: [],
+  trashItems: [],
 };
+
+type TrashPayload =
+  | { type: 'book'; data: BookRecoveryPayload }
+  | { type: 'chapter'; data: Chapter }
+  | { type: 'note'; data: Note };
+
+type BackupFile = {
+  format: 'writers-organizer-backup';
+  version: 1;
+  createdAt: number;
+  state: AppState;
+  recovery: {
+    versions: { meta: BookVersionMeta; payload: BookRecoveryPayload }[];
+    trash: { meta: TrashItemMeta; payload: TrashPayload }[];
+  };
+};
+
+function getBookRecoveryPayload(source: AppState, bookId: string): BookRecoveryPayload | null {
+  const book = source.books.find(item => item.id === bookId);
+  if (!book) return null;
+  return {
+    book,
+    account: source.accounts.find(item => item.id === book.accountId),
+    series: source.series.filter(item => item.id === book.seriesId),
+    chapters: source.chapters.filter(item => item.bookId === bookId),
+    characters: source.characters.filter(item => item.bookId === bookId),
+    settings: source.settings.filter(item => item.bookId === bookId),
+    notes: (source.notes || []).filter(item => item.bookId === bookId),
+    prompts: source.prompts.filter(item => item.bookId === bookId),
+    moodBoardItems: (source.moodBoardItems || []).filter(item => item.bookId === bookId),
+    workspace: source.bookWorkspaces?.[bookId],
+  };
+}
+
+function getPayloadHash(payload: BookRecoveryPayload): string {
+  const { workspace, ...contentPayload } = payload;
+  const serialized = JSON.stringify(contentPayload);
+  let hash = 2166136261;
+  for (let index = 0; index < serialized.length; index++) {
+    hash ^= serialized.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function getPayloadCharCount(payload: BookRecoveryPayload): number {
+  const chaptersLength = payload.chapters.reduce((sum, chapter) => sum + getTextLength(chapter.content || ''), 0);
+  return Math.max(chaptersLength, getCanvasChaptersLength(payload.book.canvasContent || ''));
+}
+
+function splitCanvasChapters(html: string): { title: string; content: string }[] {
+  const container = document.createElement('div');
+  container.innerHTML = html || '';
+  const headings = Array.from(container.querySelectorAll('h2'));
+  if (headings.length === 0) return [];
+
+  return headings.map((heading, index) => {
+    const nextHeading = headings[index + 1];
+    const range = document.createRange();
+    range.setStartAfter(heading);
+    if (nextHeading) range.setEndBefore(nextHeading);
+    else range.setEnd(container, container.childNodes.length);
+    const fragment = range.cloneContents();
+    const wrapper = document.createElement('div');
+    wrapper.appendChild(fragment);
+    return { title: heading.textContent?.trim() || `Глава ${index + 1}`, content: wrapper.innerHTML };
+  });
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function joinCanvasChapters(chapters: { title: string; content: string }[]): string {
+  return chapters.map(chapter => `<h2>${escapeHtml(chapter.title)}</h2>${chapter.content}`).join('');
+}
+
+function mergeRecoveredBook(source: AppState, payload: BookRecoveryPayload): AppState {
+  const bookId = payload.book.id;
+  return {
+    ...source,
+    accounts: payload.account && !source.accounts.some(item => item.id === payload.account?.id)
+      ? [...source.accounts, payload.account]
+      : source.accounts,
+    series: [...source.series.filter(item => !(payload.series || []).some(series => series.id === item.id)), ...(payload.series || [])],
+    books: [...source.books.filter(item => item.id !== bookId), payload.book],
+    chapters: [...source.chapters.filter(item => item.bookId !== bookId), ...(payload.chapters || [])],
+    characters: [...source.characters.filter(item => item.bookId !== bookId), ...(payload.characters || [])],
+    settings: [...source.settings.filter(item => item.bookId !== bookId), ...(payload.settings || [])],
+    notes: [...(source.notes || []).filter(item => item.bookId !== bookId), ...(payload.notes || [])],
+    prompts: [...source.prompts.filter(item => item.bookId !== bookId), ...(payload.prompts || [])],
+    moodBoardItems: [...(source.moodBoardItems || []).filter(item => item.bookId !== bookId), ...(payload.moodBoardItems || [])],
+    bookWorkspaces: payload.workspace
+      ? { ...(source.bookWorkspaces || {}), [bookId]: payload.workspace }
+      : source.bookWorkspaces,
+  };
+}
 
 
 type AppContextType = {
@@ -38,14 +146,14 @@ type AppContextType = {
   saveError: string | null;
   addAccount: (name: string, color?: string) => void;
   updateAccount: (id: string, name: string, color?: string) => void;
-  deleteAccount: (id: string) => void;
+  deleteAccount: (id: string) => Promise<void>;
   reorderAccounts: (startIndex: number, endIndex: number) => void;
   addBook: (book: Omit<Book, 'id'>) => void;
   updateBook: (id: string, updates: Partial<Book>) => void;
-  deleteBook: (id: string) => void;
+  deleteBook: (id: string) => Promise<void>;
   addChapter: (chapter: Omit<Chapter, 'id'>) => void;
   updateChapter: (id: string, updates: Partial<Chapter>) => void;
-  deleteChapter: (id: string) => void;
+  deleteChapter: (id: string) => Promise<void>;
   addCharacter: (character: Omit<Character, 'id'>) => void;
   updateCharacter: (id: string, updates: Partial<Character>) => void;
   deleteCharacter: (id: string) => void;
@@ -82,7 +190,7 @@ type AppContextType = {
   // Notes
   addNote: (note: Omit<Note, 'id' | 'createdAt' | 'updatedAt'>) => void;
   updateNote: (id: string, updates: Partial<Note>) => void;
-  deleteNote: (id: string) => void;
+  deleteNote: (id: string) => Promise<void>;
   togglePinNote: (id: string) => void;
   // MoodBoard
   addMoodBoardItem: (item: Omit<MoodBoardItem, 'id'>) => void;
@@ -101,6 +209,15 @@ type AppContextType = {
   updateScheduledTask: (id: string, updates: Partial<ScheduledTask>) => void;
   deleteScheduledTask: (id: string) => void;
   toggleScheduledTaskDate: (id: string, date: string) => void;
+  updateBookWorkspace: (bookId: string, updates: Partial<BookWorkspaceState>) => void;
+  createBookVersion: (bookId: string, label?: string, automatic?: boolean) => Promise<boolean>;
+  loadBookVersion: (versionId: string) => Promise<BookRecoveryPayload>;
+  restoreBookVersion: (versionId: string, chapterIndex?: number) => Promise<void>;
+  restoreTrashItem: (trashId: string) => Promise<void>;
+  deleteTrashItemPermanently: (trashId: string) => Promise<void>;
+  emptyTrash: () => Promise<void>;
+  exportBackup: () => Promise<string>;
+  importBackup: (contents: string) => Promise<void>;
 };
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -113,6 +230,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const lastSavedTexts = useRef<Record<string, string>>({});
+  const stateRef = useRef(state);
+  useEffect(() => { stateRef.current = state; }, [state]);
 
   // Load state on startup from Firebase — per user path: /users/{uid}/data/main
   useEffect(() => {
@@ -255,6 +374,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             moodBoardItems,
             moodBoardVersion,
             kanbanTasks: parsed.kanbanTasks || [],
+            bookWorkspaces: parsed.bookWorkspaces || {},
+            bookVersions: parsed.bookVersions || [],
+            trashItems: parsed.trashItems || [],
           });
         }
       } catch (e) {
@@ -494,20 +616,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }));
   };
 
-  const deleteAccount = (id: string) => {
-    setState((s) => {
-      const booksToDelete = s.books.filter(b => b.accountId === id).map(b => b.id);
+  const deleteAccount = async (id: string) => {
+    const current = stateRef.current;
+    const payloads = current.books
+      .filter(book => book.accountId === id)
+      .map(book => getBookRecoveryPayload(current, book.id))
+      .filter((payload): payload is BookRecoveryPayload => payload !== null);
+    const deletedAt = Date.now();
+    const trashEntries = await Promise.all(payloads.map(async payload => {
+      const trashId = generateId();
+      const chunkCount = await saveRecoveryPayload('trash', trashId, { type: 'book', data: payload } satisfies TrashPayload);
       return {
-        ...s,
-        accounts: s.accounts.filter(a => a.id !== id),
-        books: s.books.filter(b => b.accountId !== id),
-        chapters: s.chapters.filter(c => !booksToDelete.includes(c.bookId)),
-        characters: s.characters.filter(c => !booksToDelete.includes(c.bookId)),
-        settings: s.settings.filter(set => !booksToDelete.includes(set.bookId)),
-        credentials: s.credentials.filter(cred => cred.accountId !== id),
-        kanbanTasks: (s.kanbanTasks || []).filter((t) => t.accountId !== id),
+        id: trashId,
+        type: 'book' as const,
+        originalId: payload.book.id,
+        title: payload.book.title,
+        deletedAt,
+        expiresAt: deletedAt + TRASH_RETENTION_MS,
+        chunkCount,
       };
-    });
+    }));
+    const bookIds = new Set(payloads.map(payload => payload.book.id));
+    setState((s) => ({
+      ...s,
+      accounts: s.accounts.filter(account => account.id !== id),
+      books: s.books.filter(book => !bookIds.has(book.id)),
+      chapters: s.chapters.filter(chapter => !bookIds.has(chapter.bookId)),
+      characters: s.characters.filter(character => !bookIds.has(character.bookId)),
+      settings: s.settings.filter(item => !bookIds.has(item.bookId)),
+      notes: (s.notes || []).filter(note => !note.bookId || !bookIds.has(note.bookId)),
+      prompts: s.prompts.filter(prompt => !prompt.bookId || !bookIds.has(prompt.bookId)),
+      moodBoardItems: (s.moodBoardItems || []).filter(item => !bookIds.has(item.bookId)),
+      credentials: s.credentials.filter(credential => credential.accountId !== id),
+      kanbanTasks: (s.kanbanTasks || []).filter(task => task.accountId !== id),
+      bookWorkspaces: Object.fromEntries(Object.entries(s.bookWorkspaces || {}).filter(([bookId]) => !bookIds.has(bookId))),
+      trashItems: [...(s.trashItems || []), ...trashEntries],
+    }));
   };
 
   const reorderAccounts = (startIndex: number, endIndex: number) => {
@@ -579,13 +723,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const deleteBook = (id: string) => {
+  const deleteBook = async (id: string) => {
+    const current = stateRef.current;
+    const payload = getBookRecoveryPayload(current, id);
+    if (!payload) return;
+    const trashId = generateId();
+    const deletedAt = Date.now();
+    const chunkCount = await saveRecoveryPayload('trash', trashId, { type: 'book', data: payload } satisfies TrashPayload);
+    const meta: TrashItemMeta = {
+      id: trashId,
+      type: 'book',
+      originalId: id,
+      title: payload.book.title,
+      deletedAt,
+      expiresAt: deletedAt + TRASH_RETENTION_MS,
+      chunkCount,
+    };
     setState((s) => ({
       ...s,
       books: s.books.filter((b) => b.id !== id),
       chapters: s.chapters.filter((c) => c.bookId !== id),
       characters: s.characters.filter((c) => c.bookId !== id),
-      settings: s.settings.filter((set) => set.bookId !== id),
+      settings: s.settings.filter((item) => item.bookId !== id),
+      notes: (s.notes || []).filter((item) => item.bookId !== id),
+      prompts: s.prompts.filter((item) => item.bookId !== id),
+      moodBoardItems: (s.moodBoardItems || []).filter((item) => item.bookId !== id),
+      bookWorkspaces: Object.fromEntries(Object.entries(s.bookWorkspaces || {}).filter(([bookId]) => bookId !== id)),
+      trashItems: [...(s.trashItems || []), meta],
     }));
   };
 
@@ -643,8 +807,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const deleteChapter = (id: string) => {
-    setState((s) => ({ ...s, chapters: s.chapters.filter((c) => c.id !== id) }));
+  const deleteChapter = async (id: string) => {
+    const chapter = stateRef.current.chapters.find(item => item.id === id);
+    if (!chapter) return;
+    const trashId = generateId();
+    const deletedAt = Date.now();
+    const chunkCount = await saveRecoveryPayload('trash', trashId, { type: 'chapter', data: chapter } satisfies TrashPayload);
+    setState((s) => ({
+      ...s,
+      chapters: s.chapters.filter((item) => item.id !== id),
+      trashItems: [...(s.trashItems || []), {
+        id: trashId,
+        type: 'chapter',
+        originalId: id,
+        title: chapter.title,
+        deletedAt,
+        expiresAt: deletedAt + TRASH_RETENTION_MS,
+        chunkCount,
+      }],
+    }));
   };
 
   const replaceChaptersForBook = (bookId: string, parsedChapters: { id: string | null; title: string; content: string }[]) => {
@@ -1042,8 +1223,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }));
   };
 
-  const deleteNote = (id: string) => {
-    setState((s) => ({ ...s, notes: (s.notes || []).filter((n) => n.id !== id) }));
+  const deleteNote = async (id: string) => {
+    const note = (stateRef.current.notes || []).find(item => item.id === id);
+    if (!note) return;
+    const trashId = generateId();
+    const deletedAt = Date.now();
+    const chunkCount = await saveRecoveryPayload('trash', trashId, { type: 'note', data: note } satisfies TrashPayload);
+    setState((s) => ({
+      ...s,
+      notes: (s.notes || []).filter((item) => item.id !== id),
+      trashItems: [...(s.trashItems || []), {
+        id: trashId,
+        type: 'note',
+        originalId: id,
+        title: note.title || 'Без названия',
+        deletedAt,
+        expiresAt: deletedAt + TRASH_RETENTION_MS,
+        chunkCount,
+      }],
+    }));
   };
 
   const togglePinNote = (id: string) => {
@@ -1148,6 +1346,238 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }));
   };
 
+  // ---- Recovery, history and workspace ----
+  const updateBookWorkspace = (bookId: string, updates: Partial<BookWorkspaceState>) => {
+    setState((s) => ({
+      ...s,
+      bookWorkspaces: {
+        ...(s.bookWorkspaces || {}),
+        [bookId]: {
+          ...(s.bookWorkspaces?.[bookId] || {}),
+          ...updates,
+          updatedAt: Date.now(),
+        },
+      },
+    }));
+  };
+
+  const createBookVersion = async (bookId: string, label = 'Сохранённая версия', automatic = false): Promise<boolean> => {
+    const current = stateRef.current;
+    const payload = getBookRecoveryPayload(current, bookId);
+    if (!payload) throw new Error('Книга не найдена');
+    const contentHash = getPayloadHash(payload);
+    const latest = (current.bookVersions || [])
+      .filter(item => item.bookId === bookId)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    if (automatic && latest?.contentHash === contentHash) return false;
+
+    const id = generateId();
+    const createdAt = Date.now();
+    const chunkCount = await saveRecoveryPayload('bookVersions', id, payload);
+    const meta: BookVersionMeta = {
+      id,
+      bookId,
+      bookTitle: payload.book.title,
+      createdAt,
+      label,
+      automatic,
+      contentHash,
+      charCount: getPayloadCharCount(payload),
+      chapterCount: Math.max(payload.chapters.length, splitCanvasChapters(payload.book.canvasContent || '').length),
+      chunkCount,
+    };
+
+    const allVersions = [...(stateRef.current.bookVersions || []), meta];
+    const bookVersions = allVersions.filter(item => item.bookId === bookId).sort((a, b) => b.createdAt - a.createdAt);
+    const expired = bookVersions.slice(MAX_VERSIONS_PER_BOOK);
+    await Promise.all(expired.map(item => deleteRecoveryPayload('bookVersions', item.id, item.chunkCount)));
+    const expiredIds = new Set(expired.map(item => item.id));
+    setState((s) => ({
+      ...s,
+      bookVersions: [...(s.bookVersions || []).filter(item => !expiredIds.has(item.id)), meta]
+        .filter((item, index, items) => items.findIndex(candidate => candidate.id === item.id) === index),
+    }));
+    return true;
+  };
+
+  const loadBookVersion = async (versionId: string): Promise<BookRecoveryPayload> => {
+    const meta = (stateRef.current.bookVersions || []).find(item => item.id === versionId);
+    if (!meta) throw new Error('Версия не найдена');
+    return loadRecoveryPayload<BookRecoveryPayload>('bookVersions', versionId, meta.chunkCount);
+  };
+
+  const restoreBookVersion = async (versionId: string, chapterIndex?: number) => {
+    const meta = (stateRef.current.bookVersions || []).find(item => item.id === versionId);
+    if (!meta) throw new Error('Версия не найдена');
+    const payload = await loadRecoveryPayload<BookRecoveryPayload>('bookVersions', versionId, meta.chunkCount);
+    if (stateRef.current.books.some(item => item.id === meta.bookId)) {
+      await createBookVersion(meta.bookId, 'Перед восстановлением', false);
+    }
+
+    if (chapterIndex === undefined) {
+      setState((s) => mergeRecoveredBook(s, payload));
+      return;
+    }
+
+    const recoveredCanvas = splitCanvasChapters(payload.book.canvasContent || '');
+    const recoveredChapters = [...payload.chapters].sort((a, b) => a.order - b.order);
+    const recovered = recoveredCanvas[chapterIndex] || recoveredChapters[chapterIndex];
+    if (!recovered) throw new Error('Глава в этой версии не найдена');
+
+    setState((s) => {
+      const book = s.books.find(item => item.id === meta.bookId);
+      if (!book) return s;
+      const currentCanvas = splitCanvasChapters(book.canvasContent || '');
+      const nextCanvas = [...currentCanvas];
+      nextCanvas[chapterIndex] = { title: recovered.title, content: recovered.content };
+
+      const ordered = s.chapters.filter(item => item.bookId === meta.bookId).sort((a, b) => a.order - b.order);
+      const target = ordered[chapterIndex];
+      const nextChapter: Chapter = target
+        ? { ...target, title: recovered.title, content: recovered.content }
+        : {
+            id: generateId(),
+            bookId: meta.bookId,
+            title: recovered.title,
+            content: recovered.content,
+            order: chapterIndex + 1,
+            isPublished: false,
+            hasPromo: false,
+          };
+      return {
+        ...s,
+        books: s.books.map(item => item.id === meta.bookId ? { ...item, canvasContent: joinCanvasChapters(nextCanvas) } : item),
+        chapters: [...s.chapters.filter(item => item.id !== nextChapter.id), nextChapter],
+      };
+    });
+  };
+
+  const deleteTrashItemPermanently = async (trashId: string) => {
+    const meta = (stateRef.current.trashItems || []).find(item => item.id === trashId);
+    if (!meta) return;
+    const relatedVersions = meta.type === 'book'
+      ? (stateRef.current.bookVersions || []).filter(item => item.bookId === meta.originalId)
+      : [];
+    await Promise.all([
+      deleteRecoveryPayload('trash', meta.id, meta.chunkCount),
+      ...relatedVersions.map(item => deleteRecoveryPayload('bookVersions', item.id, item.chunkCount)),
+    ]);
+    const versionIds = new Set(relatedVersions.map(item => item.id));
+    setState((s) => ({
+      ...s,
+      trashItems: (s.trashItems || []).filter(item => item.id !== trashId),
+      bookVersions: (s.bookVersions || []).filter(item => !versionIds.has(item.id)),
+    }));
+  };
+
+  const restoreTrashItem = async (trashId: string) => {
+    const meta = (stateRef.current.trashItems || []).find(item => item.id === trashId);
+    if (!meta) throw new Error('Объект в корзине не найден');
+    const payload = await loadRecoveryPayload<TrashPayload>('trash', meta.id, meta.chunkCount);
+    setState((s) => {
+      if (payload.type === 'book') return mergeRecoveredBook(s, payload.data);
+      if (payload.type === 'chapter') {
+        return { ...s, chapters: [...s.chapters.filter(item => item.id !== payload.data.id), payload.data] };
+      }
+      return { ...s, notes: [...(s.notes || []).filter(item => item.id !== payload.data.id), payload.data] };
+    });
+    try {
+      await deleteRecoveryPayload('trash', meta.id, meta.chunkCount);
+    } catch (error) {
+      console.error('Restored item but failed to remove recovery payload', error);
+    }
+    setState((s) => ({ ...s, trashItems: (s.trashItems || []).filter(item => item.id !== trashId) }));
+  };
+
+  const emptyTrash = async () => {
+    const items = [...(stateRef.current.trashItems || [])];
+    const deletedBookIds = new Set(items.filter(item => item.type === 'book').map(item => item.originalId));
+    const relatedVersions = (stateRef.current.bookVersions || []).filter(item => deletedBookIds.has(item.bookId));
+    await Promise.all([
+      ...items.map(item => deleteRecoveryPayload('trash', item.id, item.chunkCount)),
+      ...relatedVersions.map(item => deleteRecoveryPayload('bookVersions', item.id, item.chunkCount)),
+    ]);
+    setState((s) => ({
+      ...s,
+      trashItems: [],
+      bookVersions: (s.bookVersions || []).filter(item => !deletedBookIds.has(item.bookId)),
+    }));
+  };
+
+  const exportBackup = async (): Promise<string> => {
+    const current = stateRef.current;
+    const versions = await Promise.all((current.bookVersions || []).map(async meta => ({
+      meta,
+      payload: await loadRecoveryPayload<BookRecoveryPayload>('bookVersions', meta.id, meta.chunkCount),
+    })));
+    const trash = await Promise.all((current.trashItems || []).map(async meta => ({
+      meta,
+      payload: await loadRecoveryPayload<TrashPayload>('trash', meta.id, meta.chunkCount),
+    })));
+    const { googleTokens, ...safeState } = current;
+    const backup: BackupFile = {
+      format: 'writers-organizer-backup',
+      version: 1,
+      createdAt: Date.now(),
+      state: safeState as AppState,
+      recovery: { versions, trash },
+    };
+    return JSON.stringify(backup, null, 2);
+  };
+
+  const importBackup = async (contents: string) => {
+    const backup = JSON.parse(contents) as BackupFile;
+    if (backup.format !== 'writers-organizer-backup' || backup.version !== 1 || !backup.state) {
+      throw new Error('Неподдерживаемый файл резервной копии');
+    }
+
+    const previousVersions = [...(stateRef.current.bookVersions || [])];
+    const previousTrash = [...(stateRef.current.trashItems || [])];
+    const restoredVersions = await Promise.all((backup.recovery?.versions || []).map(async item => ({
+      ...item.meta,
+      chunkCount: await saveRecoveryPayload('bookVersions', item.meta.id, item.payload, item.meta.chunkCount),
+    })));
+    const restoredTrash = await Promise.all((backup.recovery?.trash || []).map(async item => ({
+      ...item.meta,
+      chunkCount: await saveRecoveryPayload('trash', item.meta.id, item.payload, item.meta.chunkCount),
+    })));
+    const restoredVersionIds = new Set(restoredVersions.map(item => item.id));
+    const restoredTrashIds = new Set(restoredTrash.map(item => item.id));
+    await Promise.all([
+      ...previousVersions.filter(item => !restoredVersionIds.has(item.id)).map(item => deleteRecoveryPayload('bookVersions', item.id, item.chunkCount)),
+      ...previousTrash.filter(item => !restoredTrashIds.has(item.id)).map(item => deleteRecoveryPayload('trash', item.id, item.chunkCount)),
+    ]);
+    setState({
+      ...initialState,
+      ...backup.state,
+      googleTokens: undefined,
+      bookWorkspaces: backup.state.bookWorkspaces || {},
+      bookVersions: restoredVersions,
+      trashItems: restoredTrash,
+    });
+  };
+
+  useEffect(() => {
+    if (isLoading) return;
+    const expired = (state.trashItems || []).filter(item => item.expiresAt <= Date.now());
+    if (expired.length === 0) return;
+    const expiredBookIds = new Set(expired.filter(item => item.type === 'book').map(item => item.originalId));
+    const relatedVersions = (state.bookVersions || []).filter(item => expiredBookIds.has(item.bookId));
+    void Promise.all([
+      ...expired.map(item => deleteRecoveryPayload('trash', item.id, item.chunkCount)),
+      ...relatedVersions.map(item => deleteRecoveryPayload('bookVersions', item.id, item.chunkCount)),
+    ])
+      .then(() => {
+        const expiredIds = new Set(expired.map(item => item.id));
+        setState(current => ({
+          ...current,
+          trashItems: (current.trashItems || []).filter(item => !expiredIds.has(item.id)),
+          bookVersions: (current.bookVersions || []).filter(item => !expiredBookIds.has(item.bookId)),
+        }));
+      })
+      .catch(error => console.error('Failed to clear expired trash items', error));
+  }, [isLoading, state.bookVersions, state.trashItems]);
+
   return (
     <AppContext.Provider
       value={{
@@ -1215,6 +1645,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateScheduledTask,
         deleteScheduledTask,
         toggleScheduledTaskDate,
+        updateBookWorkspace,
+        createBookVersion,
+        loadBookVersion,
+        restoreBookVersion,
+        restoreTrashItem,
+        deleteTrashItemPermanently,
+        emptyTrash,
+        exportBackup,
+        importBackup,
       }}
     >
       {children}

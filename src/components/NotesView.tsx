@@ -119,8 +119,9 @@ export const NotesView: React.FC = () => {
 
   const handleDelete = (id: string) => {
     if (window.confirm('Удалить заметку?')) {
-      deleteNote(id);
-      if (editingId === id) resetForm();
+      void deleteNote(id)
+        .then(() => { if (editingId === id) resetForm(); })
+        .catch(error => window.alert(error.message || 'Не удалось удалить заметку'));
     }
   };
 

@@ -1,23 +1,32 @@
-import { CheckCircle2, Clock, FileText, GripVertical, Heading, ImageIcon, Plus, Search } from 'lucide-react';
-import React, { useState, useCallback, useRef } from 'react';
+import { CheckCircle2, Clock, FileText, GripVertical, Heading, ImageIcon, PanelRightOpen, Plus } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../store';
 import { cn, pickFileAsDataUrl, parseChapters } from '../utils';
 import { CanvasRichEditor, CanvasChapter, CanvasRichEditorHandle, parseChaptersFromHtml, reorderChapterHtml } from './CanvasRichEditor';
 import { format } from 'date-fns';
 import { ru } from 'date-fns/locale';
+import { WritingCompanionPanel } from './WritingCompanionPanel';
+import { CompanionPanelType } from '../types';
 
 export const ChapterEditor: React.FC<{ bookId: string }> = ({ bookId }) => {
-  const { state, updateBook } = useAppStore();
+  const { state, updateBook, updateBookWorkspace } = useAppStore();
   const book = state.books.find(b => b.id === bookId);
   const bookChapters = state.chapters.filter((c) => c.bookId === bookId).sort((a, b) => a.order - b.order);
+  const workspace = state.bookWorkspaces?.[bookId] || {};
 
-  const [viewMode, setViewMode] = useState<'single' | 'all'>('all');
-  const [selectedChapterIndex, setSelectedChapterIndex] = useState<number | null>(null);
+  const [viewMode, setViewMode] = useState<'single' | 'all'>(workspace.viewMode || 'all');
+  const [selectedChapterIndex, setSelectedChapterIndex] = useState<number | null>(workspace.selectedChapterIndex ?? null);
   const [canvasChapters, setCanvasChapters] = useState<CanvasChapter[]>([]);
   const selectedChapterRef = useRef<number | null>(null);
   const prevChaptersLengthRef = useRef<number>(0);
   const canvasEditorRef = useRef<CanvasRichEditorHandle>(null);
   const [activeScrollChapter, setActiveScrollChapter] = useState<number | null>(null);
+  const [companionPanel, setCompanionPanel] = useState<CompanionPanelType | null>(workspace.companionPanel ?? null);
+  const [companionWidth, setCompanionWidth] = useState(workspace.companionWidth || 360);
+
+  useEffect(() => {
+    updateBookWorkspace(bookId, { viewMode, selectedChapterIndex });
+  }, [bookId, selectedChapterIndex, viewMode]);
 
   // Smart paste state
   const [isPasting, setIsPasting] = useState(false);
@@ -224,6 +233,10 @@ export const ChapterEditor: React.FC<{ bookId: string }> = ({ bookId }) => {
               selectedChapterIndex={selectedChapterIndex}
               onChaptersChange={handleChaptersChange}
               onActiveChapterChange={setActiveScrollChapter}
+              initialScrollTop={workspace.scrollTop || 0}
+              initialCursorChapterIndex={workspace.cursorChapterIndex ?? null}
+              initialCursorOffset={workspace.cursorOffset || 0}
+              onPositionChange={(position) => updateBookWorkspace(bookId, position)}
             />
           </div>
         )}
@@ -234,6 +247,26 @@ export const ChapterEditor: React.FC<{ bookId: string }> = ({ bookId }) => {
         <div 
           className="md:hidden fixed inset-0 bg-black/60 z-40 backdrop-blur-sm"
           onClick={() => setShowSidebar(false)}
+        />
+      )}
+
+      {companionPanel && (
+        <WritingCompanionPanel
+          bookId={bookId}
+          active={companionPanel}
+          width={companionWidth}
+          onSelect={(panel) => {
+            setCompanionPanel(panel);
+            updateBookWorkspace(bookId, { companionPanel: panel });
+          }}
+          onClose={() => {
+            setCompanionPanel(null);
+            updateBookWorkspace(bookId, { companionPanel: null });
+          }}
+          onWidthChange={(width) => {
+            setCompanionWidth(width);
+            updateBookWorkspace(bookId, { companionWidth: width });
+          }}
         />
       )}
 
@@ -293,6 +326,20 @@ export const ChapterEditor: React.FC<{ bookId: string }> = ({ bookId }) => {
         <div className="p-3 border-b border-zinc-800 flex items-center justify-between shrink-0">
           <h3 className="font-semibold text-zinc-100 text-sm">Оглавление</h3>
           <div className="flex gap-1.5">
+            <button
+              onClick={() => {
+                const next = companionPanel ? null : 'plan';
+                setCompanionPanel(next);
+                updateBookWorkspace(bookId, { companionPanel: next });
+              }}
+              className={cn(
+                'p-1.5 rounded-md transition-colors',
+                companionPanel ? 'text-emerald-400 bg-emerald-500/10' : 'text-zinc-400 hover:bg-zinc-800/50',
+              )}
+              title={companionPanel ? 'Закрыть рабочую панель' : 'Открыть план, героев и заметки рядом с текстом'}
+            >
+              <PanelRightOpen className="w-4 h-4" />
+            </button>
             <button
               onClick={handleAddChapter}
               className="p-1.5 text-zinc-400 hover:bg-zinc-800/50 rounded-md transition-colors"
