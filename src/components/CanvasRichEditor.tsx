@@ -100,6 +100,26 @@ function fastStripHtml(html: string): string {
     return text;
 }
 
+/**
+ * Old canvas switching bugs could leave a bare chapter index before the first
+ * real heading (for example, "31"). It is not a chapter and is invisible in
+ * the table of contents, so remove only this safe, numeric-only orphan while
+ * preserving legitimate prose, epigraphs, and other pre-heading content.
+ */
+function removeOrphanedNumericPreamble(html: string): string {
+    const firstHeadingIndex = html.search(/<h2[\s>]/i);
+    if (firstHeadingIndex <= 0) return html;
+
+    const preambleHtml = html.slice(0, firstHeadingIndex);
+    const preambleText = fastStripHtml(preambleHtml).replace(/\u00a0/g, ' ').trim();
+    const containsRichContent = /<(?:img|video|audio|iframe|table|hr)\b/i.test(preambleHtml);
+
+    if (!containsRichContent && /^\d+$/.test(preambleText)) {
+        return html.slice(firstHeadingIndex);
+    }
+    return html;
+}
+
 /** Split full HTML into chapter HTML fragments by h2 headings */
 export function splitHtmlIntoChapters(html: string): string[] {
     if (!html) return [];
@@ -476,6 +496,15 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                     updateBook(bookId, { canvasContent: html });
                     canvasContentRef.current = html;
                 }
+            }
+        }
+
+        if (contentType === 'chapters') {
+            const cleanedHtml = removeOrphanedNumericPreamble(html);
+            if (cleanedHtml !== html) {
+                html = cleanedHtml;
+                canvasContentRef.current = cleanedHtml;
+                updateBook(bookId, { canvasContent: cleanedHtml });
             }
         }
 
