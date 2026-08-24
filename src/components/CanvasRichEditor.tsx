@@ -1,5 +1,5 @@
 import { Bold, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, Copy, FileText, Heading, Highlighter, Italic, Replace, Search, Strikethrough, Type, Underline, X } from 'lucide-react';
-import React, { useCallback, useEffect, useImperativeHandle, useRef, useState, forwardRef, useMemo } from 'react';
+import React, { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, forwardRef } from 'react';
 import { useAppStore } from '../store';
 import { cn } from '../utils';
 import { format } from 'date-fns';
@@ -66,6 +66,19 @@ function setCursorOffset(root: HTMLElement, offset: number): void {
         remaining -= length;
         node = walker.nextNode();
     }
+}
+
+function findChapterIndexForNode(editor: HTMLElement, node: Node): number | null {
+    const headings = Array.from(editor.querySelectorAll(HEADING_SELECTOR));
+    let chapterIndex: number | null = null;
+    for (let index = 0; index < headings.length; index++) {
+        const heading = headings[index];
+        if (heading === node || heading.contains(node)) return index;
+        const position = heading.compareDocumentPosition(node);
+        if (position & Node.DOCUMENT_POSITION_FOLLOWING) chapterIndex = index;
+        else break;
+    }
+    return chapterIndex;
 }
 
 // ─── Fast regex-based chapter parsing (no DOM) ─────────────────────────────
@@ -246,195 +259,6 @@ function ensureChapterHeading(chapterHtml: string, fullHtml: string, chapterInde
     return headingTag + chapterHtml;
 }
 
-// ─── Virtualized Chapter Block ─────────────────────────────────────────────
-
-type VirtualChapterProps = {
-    index: number;
-    html: string;
-    isVisible: boolean;
-    cachedHeight: number | null;
-    editorFontSize: number;
-    editorFontFamily: string;
-    editorLineHeight: string;
-    headingStyles: string;
-    onInput: (index: number, html: string) => void;
-    onHeightMeasured: (index: number, height: number) => void;
-    onFocusRequest: (index: number, position: 'start' | 'end') => void;
-    onPaste: (e: React.ClipboardEvent, index: number) => void;
-    registerRef: (index: number, el: HTMLDivElement | null) => void;
-    observer: IntersectionObserver | null;
-};
-
-const VirtualChapterBlock = React.memo(forwardRef<HTMLDivElement, VirtualChapterProps>(({
-    index,
-    html,
-    isVisible,
-    cachedHeight,
-    editorFontSize,
-    editorFontFamily,
-    editorLineHeight,
-    headingStyles,
-    onInput,
-    onHeightMeasured,
-    onFocusRequest,
-    onPaste,
-    registerRef,
-    observer,
-}, _ref) => {
-    const containerRef = useRef<HTMLDivElement>(null);
-    const editorRef = useRef<HTMLDivElement>(null);
-    const isEditingRef = useRef(false);
-    const htmlRef = useRef(html);
-
-    // Update htmlRef when html prop changes (from external updates)
-    useEffect(() => {
-        htmlRef.current = html;
-    }, [html]);
-
-    // Observe this block for intersection
-    useEffect(() => {
-        const container = containerRef.current;
-        if (!container || !observer) return;
-        observer.observe(container);
-        return () => observer.unobserve(container);
-    }, [observer]);
-
-    // Set content when becoming visible or when html changes externally
-    useEffect(() => {
-        if (editorRef.current) {
-            // `html` only changes after navigation or an explicit structural
-            // edit (for example, creating a new H2). In those cases the DOM
-            // must follow the canonical chapter fragment even if this block
-            // had focus immediately beforehand.
-            if (!isEditingRef.current || editorRef.current.innerHTML !== html) {
-                editorRef.current.innerHTML = html;
-                isEditingRef.current = false;
-            }
-            if (!isVisible) return;
-            requestAnimationFrame(() => {
-                if (containerRef.current) {
-                    onHeightMeasured(index, containerRef.current.offsetHeight);
-                }
-            });
-        }
-    }, [isVisible, html, index, onHeightMeasured]);
-
-    // Register ref for parent access
-    useEffect(() => {
-        registerRef(index, editorRef.current);
-        return () => registerRef(index, null);
-    }, [index, isVisible, registerRef]);
-
-    const handleInput = useCallback(() => {
-        isEditingRef.current = true;
-        if (editorRef.current) {
-            const newHtml = editorRef.current.innerHTML;
-            htmlRef.current = newHtml;
-            onInput(index, newHtml);
-        }
-        // Measure height after content change
-        requestAnimationFrame(() => {
-            if (containerRef.current) {
-                onHeightMeasured(index, containerRef.current.offsetHeight);
-            }
-        });
-    }, [index, onInput, onHeightMeasured]);
-
-    const handleBlur = useCallback(() => {
-        isEditingRef.current = false;
-    }, []);
-
-    const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-        if (!editorRef.current) return;
-        const sel = window.getSelection();
-        if (!sel || !sel.rangeCount) return;
-        const range = sel.getRangeAt(0);
-
-        if (e.key === 'ArrowUp' || (e.key === 'ArrowLeft' && range.collapsed)) {
-            // Check if cursor is at the very start
-            const editorEl = editorRef.current;
-            const isAtStart = range.collapsed &&
-                range.startOffset === 0 &&
-                (range.startContainer === editorEl ||
-                 range.startContainer === editorEl.firstChild ||
-                 (range.startContainer.nodeType === Node.TEXT_NODE &&
-                  (range.startContainer.parentNode as Node | null) === editorEl.firstChild));
-
-            if (isAtStart && index > 0) {
-                e.preventDefault();
-                onFocusRequest(index - 1, 'end');
-            }
-        } else if (e.key === 'ArrowDown' || (e.key === 'ArrowRight' && range.collapsed)) {
-            // Check if cursor is at the very end
-            const editorEl = editorRef.current;
-            const lastChild = editorEl.lastChild;
-            const isAtEnd = range.collapsed && (
-                (range.startContainer === editorEl && range.startOffset === editorEl.childNodes.length) ||
-                (range.startContainer === lastChild && range.startOffset === (lastChild?.textContent?.length || 0)) ||
-                (range.startContainer.nodeType === Node.TEXT_NODE &&
-                 (range.startContainer.parentNode as Node | null) === lastChild &&
-                 range.startOffset === (range.startContainer.textContent?.length || 0))
-            );
-
-            if (isAtEnd) {
-                e.preventDefault();
-                onFocusRequest(index + 1, 'start');
-            }
-        }
-    }, [index, onFocusRequest]);
-
-    const handlePaste = useCallback((e: React.ClipboardEvent) => {
-        onPaste(e, index);
-        // Re-measure after paste
-        requestAnimationFrame(() => {
-            if (containerRef.current) {
-                onHeightMeasured(index, containerRef.current.offsetHeight);
-            }
-            if (editorRef.current) {
-                htmlRef.current = editorRef.current.innerHTML;
-                onInput(index, editorRef.current.innerHTML);
-            }
-        });
-    }, [index, onPaste, onHeightMeasured, onInput]);
-
-    if (!isVisible) {
-        return (
-            <div
-                ref={containerRef}
-                data-chapter-index={index}
-                style={{ height: cachedHeight ? `${cachedHeight}px` : '80px', minHeight: '40px' }}
-                className="bg-transparent"
-            />
-        );
-    }
-
-    return (
-        <div ref={containerRef} data-chapter-index={index}>
-            <div
-                ref={editorRef}
-                contentEditable
-                suppressContentEditableWarning
-                onInput={handleInput}
-                onBlur={handleBlur}
-                onKeyDown={handleKeyDown}
-                onPaste={handlePaste}
-                style={{
-                    fontSize: `${editorFontSize}px`,
-                    fontFamily: editorFontFamily || 'inherit',
-                    lineHeight: editorLineHeight
-                }}
-                className={cn(
-                    "outline-none text-zinc-200 font-sans font-normal leading-relaxed text-base",
-                    headingStyles
-                )}
-                spellCheck={true}
-            />
-        </div>
-    );
-}));
-VirtualChapterBlock.displayName = 'VirtualChapterBlock';
-
-
 // ─── Main Editor Component ─────────────────────────────────────────────────
 
 export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ bookId, viewMode, selectedChapterIndex, onChaptersChange, onActiveChapterChange, initialScrollTop = 0, initialCursorChapterIndex = null, initialCursorOffset = 0, onPositionChange, contentType = 'chapters' }, ref) => {
@@ -459,51 +283,52 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     const canvasContentRef = useRef<string>(book?.[contentField] || '');
     const [copiedType, setCopiedType] = useState<string | null>(null);
 
-    // ── Virtualized chapter state (all mode) ──────────────────────────────
-    const chapterHtmlsRef = useRef<string[]>([]);
-    const [chapterHtmls, setChapterHtmls] = useState<string[]>([]);
-    const [visibleChapters, setVisibleChapters] = useState<Set<number>>(new Set());
-    const chapterHeightsRef = useRef<Record<number, number>>({});
-    const chapterEditorRefs = useRef<Record<number, HTMLDivElement | null>>({});
-    const [chapterObserver, setChapterObserver] = useState<IntersectionObserver | null>(null);
     const saveTimeoutRef = useRef<any>(null);
-    const chapterDirtyRef = useRef<Set<number>>(new Set());
     const positionTimeoutRef = useRef<number | null>(null);
+    const pendingPositionRef = useRef<{ scrollTop: number; range: Range | null } | null>(null);
     const restoredPositionKeyRef = useRef<string | null>(null);
     const onPositionChangeRef = useRef(onPositionChange);
     useEffect(() => { onPositionChangeRef.current = onPositionChange; }, [onPositionChange]);
 
+    const emitPendingPosition = useCallback(() => {
+        const pending = pendingPositionRef.current;
+        const editorRoot = singleEditorRef.current;
+        if (!pending || !editorRoot) return;
+        const range = pending.range?.startContainer.isConnected && editorRoot.contains(pending.range.startContainer)
+            ? pending.range
+            : null;
+        const cursorChapterIndex = viewMode === 'single'
+            ? selectedChapterIndex
+            : range
+                ? findChapterIndexForNode(editorRoot, range.startContainer)
+                : null;
+        onPositionChangeRef.current?.({
+            scrollTop: pending.scrollTop,
+            cursorChapterIndex,
+            cursorOffset: range ? getCursorOffset(editorRoot, range) : 0,
+        });
+        pendingPositionRef.current = null;
+    }, [selectedChapterIndex, viewMode]);
+    const emitPendingPositionRef = useRef(emitPendingPosition);
+    useEffect(() => { emitPendingPositionRef.current = emitPendingPosition; }, [emitPendingPosition]);
+
     const schedulePositionSave = useCallback(() => {
         if (!onPositionChangeRef.current) return;
+        const scrollEl = scrollContainerRef.current;
+        const editorRoot = singleEditorRef.current;
+        if (!scrollEl || !editorRoot) return;
+        const selection = window.getSelection();
+        const liveRange = selection?.rangeCount ? selection.getRangeAt(0) : null;
+        pendingPositionRef.current = {
+            scrollTop: scrollEl.scrollTop,
+            range: liveRange && editorRoot.contains(liveRange.startContainer) ? liveRange.cloneRange() : null,
+        };
         if (positionTimeoutRef.current !== null) window.clearTimeout(positionTimeoutRef.current);
         positionTimeoutRef.current = window.setTimeout(() => {
-            const scrollEl = scrollContainerRef.current;
-            if (!scrollEl) return;
-            const selection = window.getSelection();
-            const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-            let cursorChapterIndex = viewMode === 'single' ? selectedChapterIndex : null;
-            let editorRoot: HTMLElement | null = viewMode === 'single' ? singleEditorRef.current : null;
-
-            if (viewMode === 'all' && range) {
-                const element = range.startContainer.nodeType === Node.ELEMENT_NODE
-                    ? range.startContainer as Element
-                    : range.startContainer.parentElement;
-                const chapterContainer = element?.closest('[data-chapter-index]') as HTMLElement | null;
-                if (chapterContainer) {
-                    cursorChapterIndex = Number(chapterContainer.dataset.chapterIndex);
-                    editorRoot = chapterContainer.querySelector('[contenteditable="true"]') as HTMLElement | null;
-                }
-            }
-
-            onPositionChangeRef.current?.({
-                scrollTop: scrollEl.scrollTop,
-                cursorChapterIndex,
-                cursorOffset: range && editorRoot && editorRoot.contains(range.startContainer)
-                    ? getCursorOffset(editorRoot, range)
-                    : 0,
-            });
-        }, 300);
-    }, [selectedChapterIndex, viewMode]);
+            emitPendingPositionRef.current();
+            positionTimeoutRef.current = null;
+        }, 1200);
+    }, []);
 
     const [showToolbar, setShowToolbar] = useState(() => {
         try {
@@ -572,47 +397,8 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     const [isReplaceMode, setIsReplaceMode] = useState(false);
     const replaceInputRef = useRef<HTMLInputElement>(null);
 
-    // ── IntersectionObserver setup ──────────────────────────────────────────
-    useEffect(() => {
-        if (viewMode !== 'all') return;
-
-        const observer = new IntersectionObserver(
-            (entries) => {
-                setVisibleChapters(prev => {
-                    const next = new Set(prev);
-                    for (const entry of entries) {
-                        const el = entry.target as HTMLElement;
-                        const idx = parseInt(el.dataset.chapterIndex || '-1', 10);
-                        if (idx < 0) continue;
-                        if (entry.isIntersecting) {
-                            next.add(idx);
-                        } else {
-                            next.delete(idx);
-                        }
-                    }
-                    // Check if sets are equal to avoid unnecessary re-renders
-                    if (next.size === prev.size && [...next].every(v => prev.has(v))) {
-                        return prev;
-                    }
-                    return next;
-                });
-            },
-            {
-                root: scrollContainerRef.current,
-                rootMargin: '1200px 0px', // Pre-load chapters 1200px above/below viewport
-                threshold: 0,
-            }
-        );
-
-        setChapterObserver(observer);
-        return () => {
-            observer.disconnect();
-            setChapterObserver(null);
-        };
-    }, [viewMode, bookId]);
-
     // ── Load content into editor ──────────────────────────────────────────
-    useEffect(() => {
+    useLayoutEffect(() => {
         const bookChanged = lastBookId.current !== bookId;
         const modeChanged = lastViewMode.current !== viewMode;
         const chapterChanged = viewMode === 'single' ? lastChapterIdx.current !== selectedChapterIndex : false;
@@ -640,10 +426,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         if (isEditing.current && navigationChanged) {
             clearTimeout(saveTimeoutRef.current);
             if (lastViewMode.current === 'all') {
-                // In all mode, assemble from chapter htmls
-                const assembledHtml = chapterHtmlsRef.current.length > 0
-                    ? chapterHtmlsRef.current.join('')
-                    : (singleEditorRef.current?.innerHTML || canvasContentRef.current);
+                const assembledHtml = singleEditorRef.current?.innerHTML || canvasContentRef.current;
                 if (previousBookId) {
                     updateBook(previousBookId, { [contentField]: assembledHtml });
                     flushedHtml = assembledHtml;
@@ -697,13 +480,9 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         }
 
         if (viewMode === 'all') {
-            // Split into chapter fragments for virtualized rendering
-            const splitChapters = splitHtmlIntoChapters(html);
-            chapterHtmlsRef.current = splitChapters;
-            setChapterHtmls(splitChapters);
-            chapterDirtyRef.current.clear();
-            // Reset visibility for new content
-            setVisibleChapters(new Set());
+            if (singleEditorRef.current && singleEditorRef.current.innerHTML !== html) {
+                singleEditorRef.current.innerHTML = html;
+            }
             requestAnimationFrame(() => scrollContainerRef.current?.scrollTo({ top: 0 }));
         } else if (viewMode === 'single' && selectedChapterIndex !== null && singleEditorRef.current) {
             singleEditorRef.current.innerHTML = extractChapterHtml(html, selectedChapterIndex);
@@ -715,15 +494,6 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         const parsed = parseChaptersFromHtml(html);
         onChaptersChange(parsed);
     }, [bookId, viewMode, selectedChapterIndex, book?.[contentField], contentType]);
-
-    // The no-heading draft uses the single DOM editor even in canvas mode.
-    // Populate it after React has rendered that fallback editor.
-    useEffect(() => {
-        if (viewMode !== 'all' || chapterHtmls.length !== 0 || !singleEditorRef.current) return;
-        if (singleEditorRef.current.innerHTML !== canvasContentRef.current) {
-            singleEditorRef.current.innerHTML = canvasContentRef.current;
-        }
-    }, [viewMode, chapterHtmls.length, bookId]);
 
     // Restore the last scroll/cursor position once after opening this book/mode.
     useEffect(() => {
@@ -737,17 +507,14 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             scrollEl.scrollTop = Math.max(0, initialScrollTop);
         }, 40);
         const cursorTimer = window.setTimeout(() => {
-            const chapterIndex = initialCursorChapterIndex ?? selectedChapterIndex;
-            const editor = viewMode === 'all' && chapterIndex !== null
-                ? chapterEditorRefs.current[chapterIndex]
-                : singleEditorRef.current;
+            const editor = singleEditorRef.current;
             if (editor) setCursorOffset(editor, initialCursorOffset);
         }, 350);
         return () => {
             window.clearTimeout(scrollTimer);
             window.clearTimeout(cursorTimer);
         };
-    }, [bookId, chapterHtmls.length, selectedChapterIndex, viewMode]);
+    }, [bookId, selectedChapterIndex, viewMode]);
 
     useEffect(() => {
         const handleSelectionChange = () => {
@@ -769,6 +536,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
     useEffect(() => () => {
         if (positionTimeoutRef.current !== null) window.clearTimeout(positionTimeoutRef.current);
+        emitPendingPositionRef.current();
     }, []);
 
     // ── Save to store (single mode) ─────────────────────────────────────────
@@ -796,22 +564,10 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     const saveToStoreSingleRef = useRef(saveToStoreSingle);
     useEffect(() => { saveToStoreSingleRef.current = saveToStoreSingle; }, [saveToStoreSingle]);
 
-    // ── Save to store (all mode — virtualized) ────────────────────────────
+    // ── Save the unified canvas ───────────────────────────────────────────
     const saveToStoreAll = useCallback(() => {
         if (isSearchActive.current) return;
-
-        // Update dirty chapters from their DOM refs
-        for (const idx of chapterDirtyRef.current) {
-            const el = chapterEditorRefs.current[idx];
-            if (el) {
-                chapterHtmlsRef.current[idx] = el.innerHTML;
-            }
-        }
-        chapterDirtyRef.current.clear();
-
-        const assembledHtml = chapterHtmlsRef.current.length > 0
-            ? chapterHtmlsRef.current.join('')
-            : (singleEditorRef.current?.innerHTML || canvasContentRef.current);
+        const assembledHtml = singleEditorRef.current?.innerHTML || canvasContentRef.current;
         updateBook(bookId, { [contentField]: assembledHtml });
         canvasContentRef.current = assembledHtml;
         const parsed = parseChaptersFromHtml(assembledHtml);
@@ -833,55 +589,6 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             saveToStoreAllRef.current();
         } else {
             saveToStoreSingleRef.current();
-        }
-    }, []);
-
-    // ── Chapter input handler (all mode) ──────────────────────────────────
-    const handleChapterInput = useCallback((index: number, html: string) => {
-        chapterHtmlsRef.current[index] = html;
-        chapterDirtyRef.current.add(index);
-        isEditing.current = true;
-
-        clearTimeout(saveTimeoutRef.current);
-        saveTimeoutRef.current = setTimeout(() => {
-            if (typeof requestIdleCallback !== 'undefined') {
-                requestIdleCallback(() => saveToStoreAllRef.current(), { timeout: 3000 });
-            } else {
-                saveToStoreAllRef.current();
-            }
-        }, 1500); // Increased debounce for all mode
-    }, []);
-
-    // ── Chapter height tracking ──────────────────────────────────────────
-    const handleHeightMeasured = useCallback((index: number, height: number) => {
-        chapterHeightsRef.current[index] = height;
-    }, []);
-
-    // ── Focus request between chapters ──────────────────────────────────
-    const handleFocusRequest = useCallback((targetIndex: number, position: 'start' | 'end') => {
-        const el = chapterEditorRefs.current[targetIndex];
-        if (!el) return;
-        el.focus();
-        const sel = window.getSelection();
-        if (!sel) return;
-        const range = document.createRange();
-        if (position === 'start') {
-            range.selectNodeContents(el);
-            range.collapse(true);
-        } else {
-            range.selectNodeContents(el);
-            range.collapse(false);
-        }
-        sel.removeAllRanges();
-        sel.addRange(range);
-    }, []);
-
-    // ── Register chapter editor refs ──────────────────────────────────────
-    const registerChapterRef = useCallback((index: number, el: HTMLDivElement | null) => {
-        if (el) {
-            chapterEditorRefs.current[index] = el;
-        } else {
-            delete chapterEditorRefs.current[index];
         }
     }, []);
 
@@ -932,9 +639,8 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         return () => container.removeEventListener('input', handleAutoformat);
     }, [bookId]);
 
-    // ── Debounced input handler for single mode ──────────────────────────
+    // One DOM editor in both modes: typing stays local, storage updates are debounced.
     useEffect(() => {
-        if (viewMode !== 'single') return;
         const editor = singleEditorRef.current;
         if (!editor) return;
 
@@ -942,10 +648,12 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
         const handleInput = () => {
             isEditing.current = true;
+            if (viewMode === 'all') canvasContentRef.current = editor.innerHTML;
             clearTimeout(timeoutId);
             timeoutId = setTimeout(() => {
-                saveToStoreSingleRef.current();
-            }, 800);
+                if (viewMode === 'all') saveToStoreAllRef.current();
+                else saveToStoreSingleRef.current();
+            }, 900);
         };
 
         editor.addEventListener('input', handleInput);
@@ -976,24 +684,10 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [isSearchOpen]);
 
-    // ── Search — works across all visible chapter editors ──────────────────
+    // ── Search across the unified editor ───────────────────────────────────
     const getAllEditorRoots = useCallback((): HTMLElement[] => {
-        if (viewMode === 'all') {
-            const roots: HTMLElement[] = [];
-            const count = chapterHtmlsRef.current.length;
-            for (let i = 0; i < count; i++) {
-                const el = chapterEditorRefs.current[i];
-                if (el) roots.push(el);
-            }
-            if (roots.length === 0 && singleEditorRef.current) {
-                roots.push(singleEditorRef.current);
-            }
-            return roots;
-        } else if (singleEditorRef.current) {
-            return [singleEditorRef.current];
-        }
-        return [];
-    }, [viewMode]);
+        return singleEditorRef.current ? [singleEditorRef.current] : [];
+    }, []);
 
     const handleSearch = (text: string, jump: boolean = true, forward: boolean = true) => {
         isSearchActive.current = true;
@@ -1184,11 +878,9 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     };
 
     // Handle paste
-    const handlePaste = (e: React.ClipboardEvent, _chapterIndex?: number) => {
+    const handlePaste = (e: React.ClipboardEvent) => {
         const sel = window.getSelection();
-        const activeEditor = viewMode === 'all' && _chapterIndex !== undefined
-            ? chapterEditorRefs.current[_chapterIndex]
-            : singleEditorRef.current;
+        const activeEditor = singleEditorRef.current;
         if (!sel || !sel.rangeCount || !activeEditor) return;
 
         e.preventDefault();
@@ -1305,18 +997,11 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
     const findEditorForNode = useCallback((node: Node | null) => {
         if (!node) return null;
-        if (viewMode === 'all') {
-            for (const [index, editor] of Object.entries(chapterEditorRefs.current)) {
-                if (editor?.contains(node)) {
-                    return { editor, chapterIndex: Number(index) };
-                }
-            }
-            // Canvas content without an H2 is rendered in the fallback editor.
-            if (singleEditorRef.current?.contains(node)) {
-                return { editor: singleEditorRef.current, chapterIndex: null };
-            }
-        } else if (singleEditorRef.current?.contains(node)) {
-            return { editor: singleEditorRef.current, chapterIndex: selectedChapterIndex };
+        if (singleEditorRef.current?.contains(node)) {
+            return {
+                editor: singleEditorRef.current,
+                chapterIndex: viewMode === 'single' ? selectedChapterIndex : null,
+            };
         }
         return null;
     }, [viewMode, selectedChapterIndex]);
@@ -1354,19 +1039,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     const persistFormattingMutation = (editor: HTMLDivElement, chapterIndex: number | null) => {
         isEditing.current = true;
         if (viewMode === 'all') {
-            if (chapterIndex !== null) {
-                chapterHtmlsRef.current[chapterIndex] = editor.innerHTML;
-                chapterDirtyRef.current.add(chapterIndex);
-                saveToStoreAllRef.current();
-            } else {
-                const html = editor.innerHTML;
-                updateBook(bookId, { [contentField]: html });
-                canvasContentRef.current = html;
-                const split = splitHtmlIntoChapters(html);
-                chapterHtmlsRef.current = split;
-                setChapterHtmls(split);
-                onChaptersChange(parseChaptersFromHtml(html));
-            }
+            saveToStoreAllRef.current();
         } else {
             saveToStoreSingleRef.current();
         }
@@ -1416,31 +1089,12 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
         setTimeout(() => {
             if (viewMode === 'all') {
-                let assembledHtml: string;
-                if (chapterIndex === null || chapterHtmlsRef.current.length === 0) {
-                    // Draft canvas without headings is rendered in the
-                    // fallback editor, outside the virtual chapter map.
-                    assembledHtml = activeEditor.innerHTML;
-                } else {
-                    // Sync all visible editors; off-screen fragments remain
-                    // safely stored in chapterHtmlsRef.
-                    for (const [idxStr, el] of Object.entries(chapterEditorRefs.current)) {
-                        if (el) {
-                            chapterHtmlsRef.current[parseInt(idxStr)] = el.innerHTML;
-                        }
-                    }
-                    assembledHtml = chapterHtmlsRef.current.join('');
-                }
-                chapterDirtyRef.current.clear();
+                const assembledHtml = activeEditor.innerHTML;
 
                 updateBook(bookId, { [contentField]: assembledHtml });
                 canvasContentRef.current = assembledHtml;
 
                 // Re-split and update state
-                const newSplit = splitHtmlIntoChapters(assembledHtml);
-                chapterHtmlsRef.current = newSplit;
-                setChapterHtmls(newSplit);
-
                 const parsed = parseChaptersFromHtml(assembledHtml);
                 onChaptersChange(parsed);
                 if (contentType === 'characters') {
@@ -1602,7 +1256,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         if (viewMode === 'single' && selectedChapterIndex !== null) {
             htmlSnippet = extractChapterHtml(canvasContentRef.current, selectedChapterIndex);
         } else {
-            htmlSnippet = chapterHtmlsRef.current.join('');
+            htmlSnippet = singleEditorRef.current?.innerHTML || canvasContentRef.current;
         }
 
         const text = getFormattedText(htmlSnippet);
@@ -1635,9 +1289,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
     const handleCopyAll = () => {
         const htmlSnippet = viewMode === 'all'
-            ? (chapterHtmlsRef.current.length > 0
-                ? chapterHtmlsRef.current.join('')
-                : (singleEditorRef.current?.innerHTML || canvasContentRef.current))
+            ? (singleEditorRef.current?.innerHTML || canvasContentRef.current)
             : (book?.[contentField] || '');
         if (!htmlSnippet) return;
         const text = getFormattedText(htmlSnippet);
@@ -1668,17 +1320,11 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             const scrollEl = scrollContainerRef.current;
             if (!scrollEl) return;
 
-            if (viewMode === 'all') {
-                const chapterContainer = scrollEl.querySelector(`[data-chapter-index="${index}"]`) as HTMLElement;
-                if (chapterContainer) {
-                    const containerTop = chapterContainer.offsetTop - scrollEl.offsetTop;
-                    scrollEl.scrollTo({ top: containerTop - 20, behavior: 'smooth' });
-                }
-            } else if (singleEditorRef.current) {
+            if (singleEditorRef.current) {
                 const headings = singleEditorRef.current.querySelectorAll(HEADING_SELECTOR);
                 if (index < 0 || index >= headings.length) return;
                 const heading = headings[index] as HTMLElement;
-                const hTop = heading.offsetTop - scrollEl.offsetTop;
+                const hTop = heading.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top + scrollEl.scrollTop;
                 scrollEl.scrollTo({ top: hTop - 20, behavior: 'smooth' });
             }
         },
@@ -1693,28 +1339,28 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         const scrollEl = scrollContainerRef.current;
         if (!scrollEl) return;
 
-        const handleScroll = () => {
-            const chapterContainers = scrollEl.querySelectorAll('[data-chapter-index]');
-            if (chapterContainers.length === 0) {
+        let scrollFrame: number | null = null;
+        const updateScrollState = () => {
+            scrollFrame = null;
+            const editor = singleEditorRef.current;
+            const headings = editor ? Array.from(editor.querySelectorAll(HEADING_SELECTOR)) : [];
+            if (headings.length === 0) {
                 setStickyChapter(null);
                 onActiveChapterChangeRef.current?.(null);
+                schedulePositionSave();
                 return;
             }
 
             const scrollTop = scrollEl.scrollTop;
+            const threshold = scrollEl.getBoundingClientRect().top + 60;
             let current: string | null = null;
             let currentIdx: number | null = null;
 
-            for (let i = 0; i < chapterContainers.length; i++) {
-                const container = chapterContainers[i] as HTMLElement;
-                const cTop = container.offsetTop - scrollEl.offsetTop;
-                if (cTop <= scrollTop + 60) {
-                    const idx = parseInt(container.dataset.chapterIndex || '-1', 10);
-                    if (idx >= 0 && idx < chapterHtmlsRef.current.length) {
-                        const titleMatch = chapterHtmlsRef.current[idx].match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
-                        current = titleMatch ? fastStripHtml(titleMatch[1]).trim() : null;
-                        currentIdx = idx;
-                    }
+            for (let index = 0; index < headings.length; index++) {
+                const heading = headings[index] as HTMLElement;
+                if (heading.getBoundingClientRect().top <= threshold) {
+                    current = heading.textContent?.trim() || null;
+                    currentIdx = index;
                 } else {
                     break;
                 }
@@ -1725,10 +1371,17 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             onActiveChapterChangeRef.current?.(currentIdx);
             schedulePositionSave();
         };
+        const handleScroll = () => {
+            if (scrollFrame !== null) return;
+            scrollFrame = window.requestAnimationFrame(updateScrollState);
+        };
 
         scrollEl.addEventListener('scroll', handleScroll, { passive: true });
-        return () => scrollEl.removeEventListener('scroll', handleScroll);
-    }, [viewMode, bookId, chapterHtmls, schedulePositionSave]);
+        return () => {
+            scrollEl.removeEventListener('scroll', handleScroll);
+            if (scrollFrame !== null) window.cancelAnimationFrame(scrollFrame);
+        };
+    }, [viewMode, bookId, schedulePositionSave]);
 
     // Font options
     const FONT_OPTIONS = [
@@ -1985,86 +1638,38 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             <div ref={scrollContainerRef} className="flex-1 overflow-y-auto w-full px-8 pb-32">
                 {viewMode === 'all' ? (
                     <div className="min-h-full max-w-3xl mx-auto py-12">
-                        {chapterHtmls.length === 0 ? (
-                            <div
-                                ref={singleEditorRef}
-                                contentEditable
-                                onPaste={(e) => handlePaste(e)}
-                                onBlur={() => {
-                                    if (!singleEditorRef.current) return;
-                                    clearTimeout(saveTimeoutRef.current);
-                                    const currentHtml = singleEditorRef.current.innerHTML;
-                                    updateBook(bookId, { [contentField]: currentHtml });
-                                    canvasContentRef.current = currentHtml;
-                                    const newSplit = splitHtmlIntoChapters(currentHtml);
-                                    chapterHtmlsRef.current = newSplit;
-                                    setChapterHtmls(newSplit);
-                                    onChaptersChange(parseChaptersFromHtml(currentHtml));
-                                    isEditing.current = false;
-                                }}
-                                onInput={() => {
-                                    isEditing.current = true;
-                                    if (singleEditorRef.current) {
-                                        const html = singleEditorRef.current.innerHTML;
-                                        canvasContentRef.current = html;
-                                        const splits = splitHtmlIntoChapters(html);
-                                        if (splits.length > 0) {
-                                            updateBook(bookId, { [contentField]: html });
-                                            chapterHtmlsRef.current = splits;
-                                            setChapterHtmls(splits);
-                                            const parsed = parseChaptersFromHtml(html);
-                                            onChaptersChange(parsed);
-                                        } else {
-                                            clearTimeout(saveTimeoutRef.current);
-                                            saveTimeoutRef.current = setTimeout(() => {
-                                                updateBook(bookId, { [contentField]: canvasContentRef.current });
-                                            }, 800);
-                                        }
-                                    }
-                                }}
-                                style={{
-                                    fontSize: `${editorFontSize}px`,
-                                    fontFamily: editorFontFamily || 'inherit',
-                                    lineHeight: editorLineHeight
-                                }}
-                                className={cn(
-                                    "min-h-full outline-none text-zinc-200 font-sans font-normal leading-relaxed text-base",
-                                    headingStyles
-                                )}
-                                spellCheck={true}
-                                data-placeholder={
-                                    contentType === 'characters'
-                                        ? "Начните писать. Используйте кнопку H для создания персонажей."
-                                        : contentType === 'chapter_plan'
-                                            ? "Начните писать поглавный план. Используйте кнопку H для создания глав плана."
-                                            : contentType === 'annotation'
-                                                ? "Введите аннотацию книги..."
-                                                : contentType === 'short_description'
-                                                    ? "Введите краткое описание книги..."
-                                                    : "Начните писать. Используйте кнопку H для создания глав."
-                                }
-                            />
-                        ) : (
-                            chapterHtmls.map((chHtml, idx) => (
-                                <VirtualChapterBlock
-                                    key={`ch-block-${idx}`}
-                                    index={idx}
-                                    html={chHtml}
-                                    isVisible={visibleChapters.has(idx)}
-                                    cachedHeight={chapterHeightsRef.current[idx] || null}
-                                    editorFontSize={editorFontSize}
-                                    editorFontFamily={editorFontFamily}
-                                    editorLineHeight={editorLineHeight}
-                                    headingStyles={headingStyles}
-                                    onInput={handleChapterInput}
-                                    onHeightMeasured={handleHeightMeasured}
-                                    onFocusRequest={handleFocusRequest}
-                                    onPaste={handlePaste}
-                                    registerRef={registerChapterRef}
-                                    observer={chapterObserver}
-                                />
-                            ))
-                        )}
+                        <div
+                            ref={singleEditorRef}
+                            contentEditable
+                            suppressContentEditableWarning
+                            onPaste={handlePaste}
+                            onBlur={() => {
+                                clearTimeout(saveTimeoutRef.current);
+                                saveToStoreAllRef.current();
+                                isEditing.current = false;
+                            }}
+                            style={{
+                                fontSize: `${editorFontSize}px`,
+                                fontFamily: editorFontFamily || 'inherit',
+                                lineHeight: editorLineHeight
+                            }}
+                            className={cn(
+                                "min-h-full outline-none text-zinc-200 font-sans font-normal leading-relaxed text-base",
+                                headingStyles
+                            )}
+                            spellCheck={true}
+                            data-placeholder={
+                                contentType === 'characters'
+                                    ? "Начните писать. Используйте кнопку H для создания персонажей."
+                                    : contentType === 'chapter_plan'
+                                        ? "Начните писать поглавный план. Используйте кнопку H для создания глав плана."
+                                        : contentType === 'annotation'
+                                            ? "Введите аннотацию книги..."
+                                            : contentType === 'short_description'
+                                                ? "Введите краткое описание книги..."
+                                                : "Начните писать. Используйте кнопку H для создания глав."
+                            }
+                        />
                     </div>
                 ) : (
                     <div
