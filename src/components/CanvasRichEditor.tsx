@@ -53,17 +53,21 @@ export function splitHtmlIntoChapters(html: string): string[] {
     // Split on <h2...> tags, keeping the delimiter
     const parts = html.split(/(?=<h2[\s>])/i);
     const chapters: string[] = [];
+    let preamble = '';
     for (const part of parts) {
         const trimmed = part.trim();
         if (!trimmed) continue;
-        // Only include parts that start with an h2 heading
         if (/^<h2[\s>]/i.test(trimmed)) {
-            chapters.push(trimmed);
+            // Keep text written before the first heading. Dropping it makes
+            // the beginning of a manuscript disappear as soon as an H2 is
+            // created later in the canvas.
+            chapters.push(chapters.length === 0 ? preamble + trimmed : trimmed);
+            preamble = '';
         } else if (chapters.length > 0) {
-            // Content after last chapter that doesn't start with h2 — append to last chapter
             chapters[chapters.length - 1] += trimmed;
+        } else {
+            preamble += trimmed;
         }
-        // Content before first h2 is discarded (or kept as preamble if needed)
     }
     return chapters;
 }
@@ -218,7 +222,7 @@ type VirtualChapterProps = {
     onFocusRequest: (index: number, position: 'start' | 'end') => void;
     onPaste: (e: React.ClipboardEvent, index: number) => void;
     registerRef: (index: number, el: HTMLDivElement | null) => void;
-    observerRef: React.RefObject<IntersectionObserver | null>;
+    observer: IntersectionObserver | null;
 };
 
 const VirtualChapterBlock = React.memo(forwardRef<HTMLDivElement, VirtualChapterProps>(({
@@ -235,7 +239,7 @@ const VirtualChapterBlock = React.memo(forwardRef<HTMLDivElement, VirtualChapter
     onFocusRequest,
     onPaste,
     registerRef,
-    observerRef,
+    observer,
 }, _ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const editorRef = useRef<HTMLDivElement>(null);
@@ -250,19 +254,23 @@ const VirtualChapterBlock = React.memo(forwardRef<HTMLDivElement, VirtualChapter
     // Observe this block for intersection
     useEffect(() => {
         const container = containerRef.current;
-        const observer = observerRef.current;
         if (!container || !observer) return;
         observer.observe(container);
         return () => observer.unobserve(container);
-    }, [observerRef]);
+    }, [observer]);
 
     // Set content when becoming visible or when html changes externally
     useEffect(() => {
-        if (isVisible && editorRef.current) {
-            if (!isEditingRef.current) {
+        if (editorRef.current) {
+            // `html` only changes after navigation or an explicit structural
+            // edit (for example, creating a new H2). In those cases the DOM
+            // must follow the canonical chapter fragment even if this block
+            // had focus immediately beforehand.
+            if (!isEditingRef.current || editorRef.current.innerHTML !== html) {
                 editorRef.current.innerHTML = html;
+                isEditingRef.current = false;
             }
-            // Measure height after render
+            if (!isVisible) return;
             requestAnimationFrame(() => {
                 if (containerRef.current) {
                     onHeightMeasured(index, containerRef.current.offsetHeight);
@@ -275,7 +283,7 @@ const VirtualChapterBlock = React.memo(forwardRef<HTMLDivElement, VirtualChapter
     useEffect(() => {
         registerRef(index, editorRef.current);
         return () => registerRef(index, null);
-    }, [index, registerRef]);
+    }, [index, isVisible, registerRef]);
 
     const handleInput = useCallback(() => {
         isEditingRef.current = true;
@@ -417,7 +425,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     const [visibleChapters, setVisibleChapters] = useState<Set<number>>(new Set());
     const chapterHeightsRef = useRef<Record<number, number>>({});
     const chapterEditorRefs = useRef<Record<number, HTMLDivElement | null>>({});
-    const observerRef = useRef<IntersectionObserver | null>(null);
+    const [chapterObserver, setChapterObserver] = useState<IntersectionObserver | null>(null);
     const saveTimeoutRef = useRef<any>(null);
     const chapterDirtyRef = useRef<Set<number>>(new Set());
 
@@ -488,11 +496,6 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     const [isReplaceMode, setIsReplaceMode] = useState(false);
     const replaceInputRef = useRef<HTMLInputElement>(null);
 
-    // Sync the ref whenever book content changes
-    useEffect(() => {
-        canvasContentRef.current = book?.[contentField] || '';
-    }, [book?.[contentField], contentField]);
-
     // ── IntersectionObserver setup ──────────────────────────────────────────
     useEffect(() => {
         if (viewMode !== 'all') return;
@@ -525,10 +528,10 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             }
         );
 
-        observerRef.current = observer;
+        setChapterObserver(observer);
         return () => {
             observer.disconnect();
-            observerRef.current = null;
+            setChapterObserver(null);
         };
     }, [viewMode, bookId]);
 
@@ -538,12 +541,13 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         const modeChanged = lastViewMode.current !== viewMode;
         const chapterChanged = viewMode === 'single' ? lastChapterIdx.current !== selectedChapterIndex : false;
 
-        // Sync ref from store
+        const previousBookId = lastBookId.current;
+
+        // Keep the previous document in the ref until it has been flushed.
+        // Overwriting it with the new book first would save the old canvas
+        // into the newly selected book.
         const storeHtml = book?.[contentField] || '';
         const refOutOfSync = canvasContentRef.current !== storeHtml;
-        if (refOutOfSync) {
-            canvasContentRef.current = storeHtml;
-        }
 
         const navigationChanged = bookChanged || modeChanged || chapterChanged;
 
@@ -556,31 +560,40 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         if (!needsReload) return;
 
         // Force save before switching if editing
-        if (isEditing.current && (modeChanged || chapterChanged)) {
+        let flushedHtml: string | null = null;
+        if (isEditing.current && navigationChanged) {
+            clearTimeout(saveTimeoutRef.current);
             if (lastViewMode.current === 'all') {
                 // In all mode, assemble from chapter htmls
-                const assembledHtml = chapterHtmlsRef.current.join('');
-                if (assembledHtml) {
-                    updateBook(bookId, { [contentField]: assembledHtml });
-                    canvasContentRef.current = assembledHtml;
+                const assembledHtml = chapterHtmlsRef.current.length > 0
+                    ? chapterHtmlsRef.current.join('')
+                    : (singleEditorRef.current?.innerHTML || canvasContentRef.current);
+                if (previousBookId) {
+                    updateBook(previousBookId, { [contentField]: assembledHtml });
+                    flushedHtml = assembledHtml;
                     if (contentType === 'characters') {
-                        syncCharactersFromHtml(bookId, assembledHtml);
+                        syncCharactersFromHtml(previousBookId, assembledHtml);
                     }
                 }
             } else if (lastViewMode.current === 'single' && lastChapterIdx.current !== null && singleEditorRef.current) {
                 const currentHtml = singleEditorRef.current.innerHTML;
-                const fullHtml = book?.[contentField] || canvasContentRef.current;
-                if (fullHtml) {
+                const fullHtml = canvasContentRef.current;
+                if (fullHtml && previousBookId) {
                     const safeHtml = ensureChapterHeading(currentHtml, fullHtml, lastChapterIdx.current);
                     const newFullHtml = replaceChapterHtml(fullHtml, lastChapterIdx.current, safeHtml);
-                    updateBook(bookId, { [contentField]: newFullHtml });
-                    canvasContentRef.current = newFullHtml;
+                    updateBook(previousBookId, { [contentField]: newFullHtml });
+                    flushedHtml = newFullHtml;
                     if (contentType === 'characters') {
-                        syncCharactersFromHtml(bookId, newFullHtml);
+                        syncCharactersFromHtml(previousBookId, newFullHtml);
                     }
                 }
             }
         }
+
+        // A book switch always loads the newly selected book. For navigation
+        // inside one book, continue from the just-flushed HTML so a React
+        // state update cannot race the mode change.
+        canvasContentRef.current = bookChanged ? storeHtml : (flushedHtml ?? storeHtml);
 
         lastBookId.current = bookId;
         lastViewMode.current = viewMode;
@@ -615,6 +628,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             chapterDirtyRef.current.clear();
             // Reset visibility for new content
             setVisibleChapters(new Set());
+            requestAnimationFrame(() => scrollContainerRef.current?.scrollTo({ top: 0 }));
         } else if (viewMode === 'single' && selectedChapterIndex !== null && singleEditorRef.current) {
             singleEditorRef.current.innerHTML = extractChapterHtml(html, selectedChapterIndex);
         } else if (singleEditorRef.current) {
@@ -625,6 +639,15 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         const parsed = parseChaptersFromHtml(html);
         onChaptersChange(parsed);
     }, [bookId, viewMode, selectedChapterIndex, book?.[contentField], contentType]);
+
+    // The no-heading draft uses the single DOM editor even in canvas mode.
+    // Populate it after React has rendered that fallback editor.
+    useEffect(() => {
+        if (viewMode !== 'all' || chapterHtmls.length !== 0 || !singleEditorRef.current) return;
+        if (singleEditorRef.current.innerHTML !== canvasContentRef.current) {
+            singleEditorRef.current.innerHTML = canvasContentRef.current;
+        }
+    }, [viewMode, chapterHtmls.length, bookId]);
 
     // ── Save to store (single mode) ─────────────────────────────────────────
     const saveToStoreSingle = useCallback(() => {
@@ -664,7 +687,9 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         }
         chapterDirtyRef.current.clear();
 
-        const assembledHtml = chapterHtmlsRef.current.join('');
+        const assembledHtml = chapterHtmlsRef.current.length > 0
+            ? chapterHtmlsRef.current.join('')
+            : (singleEditorRef.current?.innerHTML || canvasContentRef.current);
         updateBook(bookId, { [contentField]: assembledHtml });
         canvasContentRef.current = assembledHtml;
         const parsed = parseChaptersFromHtml(assembledHtml);
@@ -676,6 +701,18 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
     const saveToStoreAllRef = useRef(saveToStoreAll);
     useEffect(() => { saveToStoreAllRef.current = saveToStoreAll; }, [saveToStoreAll]);
+
+    // Flush the last keystrokes when this editor is replaced (for example,
+    // when the user selects another book before the debounce expires).
+    useEffect(() => () => {
+        clearTimeout(saveTimeoutRef.current);
+        if (!isEditing.current) return;
+        if (lastViewMode.current === 'all') {
+            saveToStoreAllRef.current();
+        } else {
+            saveToStoreSingleRef.current();
+        }
+    }, []);
 
     // ── Chapter input handler (all mode) ──────────────────────────────────
     const handleChapterInput = useCallback((index: number, html: string) => {
@@ -825,6 +862,9 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             for (let i = 0; i < count; i++) {
                 const el = chapterEditorRefs.current[i];
                 if (el) roots.push(el);
+            }
+            if (roots.length === 0 && singleEditorRef.current) {
+                roots.push(singleEditorRef.current);
             }
             return roots;
         } else if (singleEditorRef.current) {
@@ -1139,13 +1179,83 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         }
     };
 
+    const savedSelectionRef = useRef<Range | null>(null);
+
+    const findEditorForNode = useCallback((node: Node | null) => {
+        if (!node) return null;
+        if (viewMode === 'all') {
+            for (const [index, editor] of Object.entries(chapterEditorRefs.current)) {
+                if (editor?.contains(node)) {
+                    return { editor, chapterIndex: Number(index) };
+                }
+            }
+            // Canvas content without an H2 is rendered in the fallback editor.
+            if (singleEditorRef.current?.contains(node)) {
+                return { editor: singleEditorRef.current, chapterIndex: null };
+            }
+        } else if (singleEditorRef.current?.contains(node)) {
+            return { editor: singleEditorRef.current, chapterIndex: selectedChapterIndex };
+        }
+        return null;
+    }, [viewMode, selectedChapterIndex]);
+
+    useEffect(() => {
+        const rememberSelection = () => {
+            const selection = window.getSelection();
+            if (!selection?.rangeCount || !findEditorForNode(selection.anchorNode)) return;
+            savedSelectionRef.current = selection.getRangeAt(0).cloneRange();
+        };
+        document.addEventListener('selectionchange', rememberSelection);
+        return () => document.removeEventListener('selectionchange', rememberSelection);
+    }, [findEditorForNode, bookId]);
+
+    const resolveEditingSelection = () => {
+        const selection = window.getSelection();
+        let context = selection?.rangeCount ? findEditorForNode(selection.anchorNode) : null;
+
+        if (!context && selection && savedSelectionRef.current) {
+            const savedRange = savedSelectionRef.current;
+            context = findEditorForNode(savedRange.startContainer);
+            if (context && savedRange.startContainer.isConnected) {
+                try {
+                    selection.removeAllRanges();
+                    selection.addRange(savedRange.cloneRange());
+                } catch (_) {
+                    context = null;
+                }
+            }
+        }
+
+        return context && selection?.rangeCount ? { selection, ...context } : null;
+    };
+
+    const persistFormattingMutation = (editor: HTMLDivElement, chapterIndex: number | null) => {
+        isEditing.current = true;
+        if (viewMode === 'all') {
+            if (chapterIndex !== null) {
+                chapterHtmlsRef.current[chapterIndex] = editor.innerHTML;
+                chapterDirtyRef.current.add(chapterIndex);
+                saveToStoreAllRef.current();
+            } else {
+                const html = editor.innerHTML;
+                updateBook(bookId, { [contentField]: html });
+                canvasContentRef.current = html;
+                const split = splitHtmlIntoChapters(html);
+                chapterHtmlsRef.current = split;
+                setChapterHtmls(split);
+                onChaptersChange(parseChaptersFromHtml(html));
+            }
+        } else {
+            saveToStoreSingleRef.current();
+        }
+        isEditing.current = false;
+    };
+
     // Toggle heading
     const toggleHeading = () => {
-        const sel = window.getSelection();
-        const activeEditor = viewMode === 'all'
-            ? Object.values(chapterEditorRefs.current).find(el => el && el.contains(sel?.anchorNode || null))
-            : singleEditorRef.current;
-        if (!sel || !sel.rangeCount || !activeEditor) return;
+        const context = resolveEditingSelection();
+        if (!context) return;
+        const { selection: sel, editor: activeEditor, chapterIndex } = context;
 
         const range = sel.getRangeAt(0);
         let node: Node | null = range.startContainer;
@@ -1173,7 +1283,10 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
             sel.removeAllRanges();
             sel.addRange(newRange);
         } else {
-            document.execCommand('formatBlock', false, HEADING_TAG);
+            const formatted = document.execCommand('formatBlock', false, 'h2');
+            if (!formatted) {
+                document.execCommand('formatBlock', false, '<h2>');
+            }
         }
 
         activeEditor.focus();
@@ -1181,15 +1294,23 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
         setTimeout(() => {
             if (viewMode === 'all') {
-                // Sync all visible editors
-                for (const [idxStr, el] of Object.entries(chapterEditorRefs.current)) {
-                    if (el) {
-                        chapterHtmlsRef.current[parseInt(idxStr)] = el.innerHTML;
+                let assembledHtml: string;
+                if (chapterIndex === null || chapterHtmlsRef.current.length === 0) {
+                    // Draft canvas without headings is rendered in the
+                    // fallback editor, outside the virtual chapter map.
+                    assembledHtml = activeEditor.innerHTML;
+                } else {
+                    // Sync all visible editors; off-screen fragments remain
+                    // safely stored in chapterHtmlsRef.
+                    for (const [idxStr, el] of Object.entries(chapterEditorRefs.current)) {
+                        if (el) {
+                            chapterHtmlsRef.current[parseInt(idxStr)] = el.innerHTML;
+                        }
                     }
+                    assembledHtml = chapterHtmlsRef.current.join('');
                 }
                 chapterDirtyRef.current.clear();
 
-                const assembledHtml = chapterHtmlsRef.current.join('');
                 updateBook(bookId, { [contentField]: assembledHtml });
                 canvasContentRef.current = assembledHtml;
 
@@ -1236,19 +1357,16 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
     };
 
     const execPreservingSelection = (command: string, value?: string) => {
-        const sel = window.getSelection();
-        const activeEditor = viewMode === 'all'
-            ? Object.values(chapterEditorRefs.current).find(el => el && el.contains(sel?.anchorNode || null))
-            : singleEditorRef.current;
-        if (!sel || !sel.rangeCount || !activeEditor) return;
-        const range = sel.getRangeAt(0).cloneRange();
+        const context = resolveEditingSelection();
+        if (!context) return;
+        const { selection, editor, chapterIndex } = context;
 
         document.execCommand(command, false, value);
-
-        try {
-            sel.removeAllRanges();
-            sel.addRange(range);
-        } catch (_) {}
+        editor.focus();
+        if (selection.rangeCount) {
+            savedSelectionRef.current = selection.getRangeAt(0).cloneRange();
+        }
+        persistFormattingMutation(editor, chapterIndex);
     };
 
     const formatBold = () => { execPreservingSelection('bold'); };
@@ -1276,14 +1394,6 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
     const applyHighlight = (color: string) => {
         execPreservingSelection('hiliteColor', color);
-        isEditing.current = true;
-        setTimeout(() => {
-            if (viewMode === 'all') {
-                saveToStoreAllRef.current();
-            } else {
-                saveToStoreSingleRef.current();
-            }
-        }, 100);
     };
 
     const cleanHtmlForClipboard = (htmlString: string): string => {
@@ -1403,7 +1513,9 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
 
     const handleCopyAll = () => {
         const htmlSnippet = viewMode === 'all'
-            ? chapterHtmlsRef.current.join('')
+            ? (chapterHtmlsRef.current.length > 0
+                ? chapterHtmlsRef.current.join('')
+                : (singleEditorRef.current?.innerHTML || canvasContentRef.current))
             : (book?.[contentField] || '');
         if (!htmlSnippet) return;
         const text = getFormattedText(htmlSnippet);
@@ -1757,31 +1869,33 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                                 onPaste={(e) => handlePaste(e)}
                                 onBlur={() => {
                                     if (!singleEditorRef.current) return;
+                                    clearTimeout(saveTimeoutRef.current);
                                     const currentHtml = singleEditorRef.current.innerHTML;
-                                    if (currentHtml.trim()) {
-                                        updateBook(bookId, { [contentField]: currentHtml });
-                                        canvasContentRef.current = currentHtml;
-                                        const newSplit = splitHtmlIntoChapters(currentHtml);
-                                        if (newSplit.length > 0) {
-                                            chapterHtmlsRef.current = newSplit;
-                                            setChapterHtmls(newSplit);
-                                        }
-                                        const parsed = parseChaptersFromHtml(currentHtml);
-                                        onChaptersChange(parsed);
-                                    }
+                                    updateBook(bookId, { [contentField]: currentHtml });
+                                    canvasContentRef.current = currentHtml;
+                                    const newSplit = splitHtmlIntoChapters(currentHtml);
+                                    chapterHtmlsRef.current = newSplit;
+                                    setChapterHtmls(newSplit);
+                                    onChaptersChange(parseChaptersFromHtml(currentHtml));
+                                    isEditing.current = false;
                                 }}
                                 onInput={() => {
                                     isEditing.current = true;
                                     if (singleEditorRef.current) {
                                         const html = singleEditorRef.current.innerHTML;
+                                        canvasContentRef.current = html;
                                         const splits = splitHtmlIntoChapters(html);
                                         if (splits.length > 0) {
                                             updateBook(bookId, { [contentField]: html });
-                                            canvasContentRef.current = html;
                                             chapterHtmlsRef.current = splits;
                                             setChapterHtmls(splits);
                                             const parsed = parseChaptersFromHtml(html);
                                             onChaptersChange(parsed);
+                                        } else {
+                                            clearTimeout(saveTimeoutRef.current);
+                                            saveTimeoutRef.current = setTimeout(() => {
+                                                updateBook(bookId, { [contentField]: canvasContentRef.current });
+                                            }, 800);
                                         }
                                     }
                                 }}
@@ -1810,7 +1924,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                         ) : (
                             chapterHtmls.map((chHtml, idx) => (
                                 <VirtualChapterBlock
-                                    key={`ch-${idx}-${chapterHtmls.length}`}
+                                    key={`ch-block-${idx}`}
                                     index={idx}
                                     html={chHtml}
                                     isVisible={visibleChapters.has(idx)}
@@ -1824,7 +1938,7 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
                                     onFocusRequest={handleFocusRequest}
                                     onPaste={handlePaste}
                                     registerRef={registerChapterRef}
-                                    observerRef={observerRef}
+                                    observer={chapterObserver}
                                 />
                             ))
                         )}
