@@ -143,8 +143,17 @@ export const CharacterEditor: React.FC<{ bookId: string }> = ({ bookId }) => {
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy characters', err);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     }
   };
 
@@ -195,10 +204,11 @@ export const CharacterEditor: React.FC<{ bookId: string }> = ({ bookId }) => {
           <div className="flex gap-1">
             <button
               onClick={handleCopyAll}
-              className="p-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/50 rounded-md transition-colors"
+              className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/50 rounded-md transition-colors"
               title="Скопировать всех персонажей"
             >
               {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <ClipboardCopy className="w-4 h-4" />}
+              <span>{copied ? 'Скопировано' : 'Скопировать всех'}</span>
             </button>
             <button
               onClick={handleAddCharacter}

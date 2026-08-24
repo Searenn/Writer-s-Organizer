@@ -1,4 +1,4 @@
-import { CalendarDays, Globe2, ListTree, Plus, StickyNote, Users, X } from 'lucide-react';
+import { CalendarDays, Check, Copy, Globe2, ListTree, Plus, StickyNote, Users, X } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../store';
 import { CompanionPanelType } from '../types';
@@ -47,8 +47,18 @@ export const WritingCompanionPanel: React.FC<Props> = ({
   const chapters = state.chapters.filter(item => item.bookId === bookId).sort((a, b) => a.order - b.order);
   const [draftTitle, setDraftTitle] = useState('');
   const [resizing, setResizing] = useState(false);
+  const [liveWidth, setLiveWidth] = useState(width);
+  const liveWidthRef = useRef(width);
   const resizeStart = useRef({ x: 0, width });
   const planRef = useRef<HTMLDivElement>(null);
+  const [charactersCopied, setCharactersCopied] = useState(false);
+
+  useEffect(() => {
+    if (!resizing) {
+      liveWidthRef.current = width;
+      setLiveWidth(width);
+    }
+  }, [resizing, width]);
 
   useEffect(() => {
     if (active === 'plan' && planRef.current && planRef.current.innerHTML !== (book?.chapterPlan || '')) {
@@ -59,10 +69,15 @@ export const WritingCompanionPanel: React.FC<Props> = ({
   useEffect(() => {
     if (!resizing) return;
     const handleMove = (event: MouseEvent) => {
-      const next = Math.min(560, Math.max(280, resizeStart.current.width + resizeStart.current.x - event.clientX));
-      onWidthChange(next);
+      const maxWidth = Math.min(960, Math.floor(window.innerWidth * 0.7));
+      const next = Math.min(maxWidth, Math.max(180, resizeStart.current.width + resizeStart.current.x - event.clientX));
+      liveWidthRef.current = next;
+      setLiveWidth(next);
     };
-    const handleUp = () => setResizing(false);
+    const handleUp = () => {
+      setResizing(false);
+      onWidthChange(liveWidthRef.current);
+    };
     document.addEventListener('mousemove', handleMove);
     document.addEventListener('mouseup', handleUp);
     document.body.style.cursor = 'col-resize';
@@ -84,17 +99,45 @@ export const WritingCompanionPanel: React.FC<Props> = ({
     setDraftTitle('');
   };
 
+  const copyAllCharacters = async () => {
+    const text = characters.map(character => [
+      character.name,
+      character.aliases ? `Псевдонимы: ${character.aliases}` : '',
+      character.description,
+    ].filter(Boolean).join('\n')).join('\n\n');
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+    }
+    setCharactersCopied(true);
+    window.setTimeout(() => setCharactersCopied(false), 1800);
+  };
+
   if (!book) return null;
 
   return (
     <aside
       className="absolute inset-y-0 right-0 z-40 md:relative md:inset-auto md:z-auto bg-zinc-950 border-l border-zinc-800 flex flex-col shrink-0 shadow-2xl md:shadow-none max-w-full"
-      style={{ width }}
+      style={{ width: liveWidth }}
     >
       <button
         onMouseDown={(event) => {
-          resizeStart.current = { x: event.clientX, width };
+          resizeStart.current = { x: event.clientX, width: liveWidthRef.current };
           setResizing(true);
+        }}
+        onDoubleClick={() => {
+          liveWidthRef.current = 360;
+          setLiveWidth(360);
+          onWidthChange(360);
         }}
         className="hidden md:block absolute -left-1 top-0 bottom-0 w-2 cursor-col-resize group z-10"
         title="Изменить ширину"
@@ -149,6 +192,15 @@ export const WritingCompanionPanel: React.FC<Props> = ({
               <h3 className="text-sm font-semibold text-zinc-200">
                 {active === 'characters' ? 'Персонажи' : active === 'settings' ? 'Мир и локации' : 'Заметки книги'}
               </h3>
+              {active === 'characters' && characters.length > 0 && (
+                <button
+                  onClick={() => void copyAllCharacters()}
+                  className="mt-2 flex items-center gap-1.5 text-[11px] font-semibold text-zinc-500 hover:text-emerald-400 transition-colors"
+                >
+                  {charactersCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  {charactersCopied ? 'Все персонажи скопированы' : 'Скопировать всех персонажей'}
+                </button>
+              )}
               <div className="flex gap-2 mt-2">
                 <input
                   value={draftTitle}
