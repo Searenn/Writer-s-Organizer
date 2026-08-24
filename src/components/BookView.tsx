@@ -205,7 +205,7 @@ export const BookView: React.FC<{
 
       <div className="flex-1 overflow-hidden">
         {activeTab === 'info' && <BookInfoTab bookId={book.id} />}
-        {activeTab === 'chapters' && <ChapterEditor bookId={book.id} />}
+        {activeTab === 'chapters' && <ChapterEditor key={book.id} bookId={book.id} />}
         {activeTab === 'schedule' && <ScheduleTab bookId={book.id} />}
         {activeTab === 'ads' && <BookAdsTab bookId={book.id} />}
         {activeTab === 'mood' && <MoodBoardTab bookId={book.id} />}
