@@ -673,22 +673,21 @@ export const CanvasRichEditor = forwardRef<CanvasRichEditorHandle, Props>(({ boo
         const editor = singleEditorRef.current;
         if (!editor) return;
 
-        let timeoutId: any;
-
         const handleInput = () => {
             isEditing.current = true;
-            if (viewMode === 'all') canvasContentRef.current = editor.innerHTML;
-            clearTimeout(timeoutId);
-            timeoutId = setTimeout(() => {
+            clearTimeout(saveTimeoutRef.current);
+            saveTimeoutRef.current = window.setTimeout(() => {
                 if (viewMode === 'all') saveToStoreAllRef.current();
                 else saveToStoreSingleRef.current();
+                saveTimeoutRef.current = null;
             }, 900);
         };
 
         editor.addEventListener('input', handleInput);
         return () => {
             editor.removeEventListener('input', handleInput);
-            clearTimeout(timeoutId);
+            clearTimeout(saveTimeoutRef.current);
+            saveTimeoutRef.current = null;
         };
     }, [bookId, viewMode]);
 
