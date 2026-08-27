@@ -7,6 +7,36 @@ import { deleteRecoveryPayload, loadRecoveryPayload, saveRecoveryPayload } from 
 const STORAGE_KEY = 'writer-organizer-state';
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_VERSIONS_PER_BOOK = 30;
+const FIRESTORE_TEXT_CHUNK_SIZE = 400000;
+
+const BOOK_CONTENT_FIELDS = [
+  'canvasContent',
+  'charactersCanvasContent',
+  'coverPath',
+  'chapterPlan',
+] as const;
+
+function hasBookContentUpdate(updates: Partial<Book>): boolean {
+  return BOOK_CONTENT_FIELDS.some(field => Object.prototype.hasOwnProperty.call(updates, field));
+}
+
+function stripBookContent(book: Book): Omit<Book, typeof BOOK_CONTENT_FIELDS[number]> {
+  const { canvasContent, charactersCanvasContent, coverPath, chapterPlan, ...metadata } = book;
+  return metadata;
+}
+
+function stripChapterContent(chapter: Chapter): Omit<Chapter, 'content'> {
+  const { content, ...metadata } = chapter;
+  return metadata;
+}
+
+function getTextChunks(value: string): string[] {
+  const chunks: string[] = [];
+  for (let index = 0; index < value.length; index += FIRESTORE_TEXT_CHUNK_SIZE) {
+    chunks.push(value.substring(index, index + FIRESTORE_TEXT_CHUNK_SIZE));
+  }
+  return chunks.length > 0 ? chunks : [''];
+}
 
 const initialState: AppState = {
   accounts: [],
@@ -229,9 +259,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const lastSavedTexts = useRef<Record<string, string>>({});
+  const dirtyBookContentVersions = useRef<Map<string, number>>(new Map());
+  const dirtyChapterContentVersions = useRef<Map<string, number>>(new Map());
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
+
+  const markBookContentDirty = useCallback((bookId: string) => {
+    const nextVersion = (dirtyBookContentVersions.current.get(bookId) || 0) + 1;
+    dirtyBookContentVersions.current.set(bookId, nextVersion);
+  }, []);
+
+  const markChapterContentDirty = useCallback((chapterId: string) => {
+    const nextVersion = (dirtyChapterContentVersions.current.get(chapterId) || 0) + 1;
+    dirtyChapterContentVersions.current.set(chapterId, nextVersion);
+  }, []);
 
   // Load state on startup from Firebase — per user path: /users/{uid}/data/main
   useEffect(() => {
@@ -243,7 +284,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return;
         }
 
-        const { doc, getDoc, setDoc, collection, getDocs } = await import('firebase/firestore');
+        const { doc, getDoc, collection, getDocs } = await import('firebase/firestore');
         const { db } = await import('./lib/firebase');
 
         const userDocRef = doc(db, 'users', uid, 'data', 'main');
@@ -307,7 +348,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             books = Object.values(books);
           }
           
-          // Merge book canvas contents and populate cache
+          // Merge book canvas contents. Do not keep a second "last saved"
+          // copy: large manuscripts and base64 covers can otherwise double
+          // the browser heap before the editor even opens.
           books = books.map((book: any) => {
             let canvasContent = booksTextMap[book.id]?.canvasContent ?? book.canvasContent ?? '';
             let idx = 1;
@@ -328,7 +371,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               }
             }
             
-            lastSavedTexts.current[`book_${book.id}`] = `${canvasContent}##${charactersCanvasContent}##${coverPath ?? ''}##${chapterPlan ?? ''}`;
             return {
               ...book,
               canvasContent,
@@ -357,7 +399,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               cIdx++;
             }
             
-            lastSavedTexts.current[`chapter_${chapter.id}`] = content;
             return {
               ...chapter,
               content
@@ -389,7 +430,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     loadFromDB();
   }, []);
 
-  // Save state on changes to Firebase (debounced) — per user
+  // Save state on changes to Firebase (debounced) — per user.
+  // Manuscripts stay out of the metadata snapshot. Only content explicitly
+  // marked dirty is copied, chunked and uploaded; inactive books are never
+  // walked or duplicated during an editor save.
   useEffect(() => {
     if (isLoading) return;
 
@@ -407,10 +451,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const { doc, setDoc, deleteDoc } = await import('firebase/firestore');
         const { db } = await import('./lib/firebase');
-        // Don't persist google tokens to cloud — they're short-lived
+        // Don't persist google tokens to cloud — they're short-lived. Strip
+        // large content before JSON serialization so a save does not clone
+        // the complete library into a second and then a third heap object.
         const { googleTokens, ...stateToSave } = state;
+        const lightweightState = {
+          ...stateToSave,
+          books: stateToSave.books.map(stripBookContent),
+          chapters: stateToSave.chapters.map(stripChapterContent),
+        };
         try {
-          cleanState = JSON.parse(JSON.stringify(stateToSave));
+          cleanState = JSON.parse(JSON.stringify(lightweightState));
         } catch (err: any) {
           throw new Error(`Serialization: ${err.message}`);
         }
@@ -440,109 +491,86 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           cleanState.scheduledTasks = tasksMap;
         }
 
-        const CHUNK_SIZE = 400000;
-        const getChunks = (str: string) => {
-          const chunks: string[] = [];
-          for (let i = 0; i < str.length; i += CHUNK_SIZE) {
-            chunks.push(str.substring(i, i + CHUNK_SIZE));
+        const dirtyBooks = Array.from(dirtyBookContentVersions.current.entries());
+        const dirtyChapters = Array.from(dirtyChapterContentVersions.current.entries());
+        const booksById = new Map(state.books.map(book => [book.id, book]));
+        const chaptersById = new Map(state.chapters.map(chapter => [chapter.id, chapter]));
+
+        const saveBook = async ([bookId, version]: [string, number]) => {
+          const book = booksById.get(bookId);
+          if (!book) {
+            if (dirtyBookContentVersions.current.get(bookId) === version) {
+              dirtyBookContentVersions.current.delete(bookId);
+            }
+            return;
           }
-          if (chunks.length === 0) chunks.push('');
-          return chunks;
+
+          const canvasChunks = getTextChunks(book.canvasContent ?? '');
+          const chapterPlanChunks = getTextChunks(book.chapterPlan ?? '');
+          const writes: Promise<unknown>[] = [
+            setDoc(doc(db, 'users', uid, 'books', bookId), {
+              canvasContent: canvasChunks[0],
+              charactersCanvasContent: book.charactersCanvasContent ?? '',
+              coverPath: book.coverPath ?? '',
+              chapterPlan: chapterPlanChunks[0],
+              canvasChunksCount: canvasChunks.length,
+              chapterPlanChunksCount: chapterPlanChunks.length,
+            }),
+          ];
+
+          for (let index = 1; index < canvasChunks.length; index++) {
+            writes.push(setDoc(doc(db, 'users', uid, 'books', `${bookId}_canvas_${index}`), { canvasContent: canvasChunks[index] }));
+          }
+          for (let index = canvasChunks.length; index < canvasChunks.length + 5; index++) {
+            writes.push(deleteDoc(doc(db, 'users', uid, 'books', `${bookId}_canvas_${index}`)));
+          }
+          for (let index = 1; index < chapterPlanChunks.length; index++) {
+            writes.push(setDoc(doc(db, 'users', uid, 'books', `${bookId}_plan_${index}`), { chapterPlan: chapterPlanChunks[index] }));
+          }
+          for (let index = chapterPlanChunks.length; index < chapterPlanChunks.length + 5; index++) {
+            writes.push(deleteDoc(doc(db, 'users', uid, 'books', `${bookId}_plan_${index}`)));
+          }
+
+          await Promise.all(writes);
+          if (dirtyBookContentVersions.current.get(bookId) === version) {
+            dirtyBookContentVersions.current.delete(bookId);
+          }
         };
 
-        const savePromises: Promise<any>[] = [];
-
-        // Save book canvas content separately to prevent exceeding Firestore 1MB document size limit
-        const booksMap = cleanState.books;
-        if (booksMap && typeof booksMap === 'object') {
-          Object.keys(booksMap).forEach(bookId => {
-            const book = booksMap[bookId];
-            const canvasContent = book.canvasContent ?? '';
-            const charactersCanvasContent = book.charactersCanvasContent ?? '';
-            const coverPath = book.coverPath ?? '';
-            const chapterPlan = book.chapterPlan ?? '';
-            
-            const bookKey = `book_${bookId}`;
-            const currentText = `${canvasContent}##${charactersCanvasContent}##${coverPath}##${chapterPlan}`;
-            
-            if (lastSavedTexts.current[bookKey] !== currentText) {
-              const canvasChunks = getChunks(canvasContent);
-              const chapterPlanChunks = getChunks(chapterPlan);
-
-              savePromises.push(
-                setDoc(doc(db, 'users', uid, 'books', bookId), { 
-                  canvasContent: canvasChunks[0], 
-                  charactersCanvasContent, 
-                  coverPath, 
-                  chapterPlan: chapterPlanChunks[0],
-                  canvasChunksCount: canvasChunks.length,
-                  chapterPlanChunksCount: chapterPlanChunks.length
-                })
-                  .then(() => {
-                    lastSavedTexts.current[bookKey] = currentText;
-                  })
-              );
-              
-              for (let i = 1; i < canvasChunks.length; i++) {
-                 savePromises.push(setDoc(doc(db, 'users', uid, 'books', `${bookId}_canvas_${i}`), { canvasContent: canvasChunks[i] }));
-              }
-              for (let i = canvasChunks.length; i < canvasChunks.length + 5; i++) {
-                 savePromises.push(deleteDoc(doc(db, 'users', uid, 'books', `${bookId}_canvas_${i}`)));
-              }
-
-              for (let i = 1; i < chapterPlanChunks.length; i++) {
-                 savePromises.push(setDoc(doc(db, 'users', uid, 'books', `${bookId}_plan_${i}`), { chapterPlan: chapterPlanChunks[i] }));
-              }
-              for (let i = chapterPlanChunks.length; i < chapterPlanChunks.length + 5; i++) {
-                 savePromises.push(deleteDoc(doc(db, 'users', uid, 'books', `${bookId}_plan_${i}`)));
-              }
+        const saveChapter = async ([chapterId, version]: [string, number]) => {
+          const chapter = chaptersById.get(chapterId);
+          if (!chapter) {
+            if (dirtyChapterContentVersions.current.get(chapterId) === version) {
+              dirtyChapterContentVersions.current.delete(chapterId);
             }
-            
-            delete book.canvasContent;
-            delete book.charactersCanvasContent;
-            delete book.coverPath;
-            delete book.chapterPlan;
-          });
-        }
+            return;
+          }
 
-        // Save chapter content separately to prevent exceeding Firestore 1MB document size limit
-        if (Array.isArray(cleanState.chapters)) {
-          cleanState.chapters.forEach((chapter: any) => {
-            const chapterId = chapter.id;
-            const content = chapter.content ?? '';
-            
-            const chapterKey = `chapter_${chapterId}`;
-            if (lastSavedTexts.current[chapterKey] !== content) {
-              const chunks = getChunks(content);
+          const chunks = getTextChunks(chapter.content ?? '');
+          const writes: Promise<unknown>[] = [
+            setDoc(doc(db, 'users', uid, 'chapters', chapterId), {
+              content: chunks[0],
+              chunksCount: chunks.length,
+            }),
+          ];
+          for (let index = 1; index < chunks.length; index++) {
+            writes.push(setDoc(doc(db, 'users', uid, 'chapters', `${chapterId}_chunk_${index}`), { content: chunks[index] }));
+          }
+          for (let index = chunks.length; index < chunks.length + 5; index++) {
+            writes.push(deleteDoc(doc(db, 'users', uid, 'chapters', `${chapterId}_chunk_${index}`)));
+          }
 
-              savePromises.push(
-                setDoc(doc(db, 'users', uid, 'chapters', chapterId), { 
-                  content: chunks[0],
-                  chunksCount: chunks.length
-                })
-                  .then(() => {
-                    lastSavedTexts.current[chapterKey] = content;
-                  })
-              );
+          await Promise.all(writes);
+          if (dirtyChapterContentVersions.current.get(chapterId) === version) {
+            dirtyChapterContentVersions.current.delete(chapterId);
+          }
+        };
 
-              for (let i = 1; i < chunks.length; i++) {
-                 savePromises.push(setDoc(doc(db, 'users', uid, 'chapters', `${chapterId}_chunk_${i}`), { content: chunks[i] }));
-              }
-              for (let i = chunks.length; i < chunks.length + 5; i++) {
-                 savePromises.push(deleteDoc(doc(db, 'users', uid, 'chapters', `${chapterId}_chunk_${i}`)));
-              }
-            }
-            
-            delete chapter.content;
-          });
-        }
-
-        // Save main state document containing metadata
-        savePromises.push(
-          setDoc(doc(db, 'users', uid, 'data', 'main'), cleanState)
-        );
-
-        await Promise.all(savePromises);
+        await Promise.all([
+          setDoc(doc(db, 'users', uid, 'data', 'main'), cleanState),
+          ...dirtyBooks.map(saveBook),
+          ...dirtyChapters.map(saveChapter),
+        ]);
         setIsSaving(false);
       } catch (e: any) {
         console.error('Failed to save state to Firebase', e);
@@ -675,13 +703,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addBook = (book: Omit<Book, 'id'>) => {
-    setState((s) => ({ ...s, books: [...s.books, { ...book, id: generateId(), createdAt: Date.now() }] }));
+    const id = generateId();
+    if (hasBookContentUpdate(book)) markBookContentDirty(id);
+    setState((s) => ({ ...s, books: [...s.books, { ...book, id, createdAt: Date.now() }] }));
   };
 
   // Cache for canvas content lengths to avoid re-parsing on every save
   const canvasLengthCache = useRef<Record<string, number>>({});
 
   const updateBook = (id: string, updates: Partial<Book>) => {
+    if (hasBookContentUpdate(updates)) markBookContentDirty(id);
     setState((s) => {
       const oldBook = s.books.find(b => b.id === id);
       let newLogs = s.writingLogs || [];
@@ -754,6 +785,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addChapter = (chapter: Omit<Chapter, 'id'>) => {
+    const id = generateId();
+    markChapterContentDirty(id);
     setState((s) => {
       let newLogs = s.writingLogs || [];
       if (chapter.content && chapter.content.length > 0) {
@@ -769,11 +802,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           newLogs = [...newLogs, { date: today, count: chapter.content.length }];
         }
       }
-      return { ...s, chapters: [...s.chapters, { ...chapter, id: generateId() }], writingLogs: newLogs };
+      return { ...s, chapters: [...s.chapters, { ...chapter, id }], writingLogs: newLogs };
     });
   };
 
   const updateChapter = (id: string, updates: Partial<Chapter>) => {
+    if (Object.prototype.hasOwnProperty.call(updates, 'content')) markChapterContentDirty(id);
     setState((s) => {
       const oldChapter = s.chapters.find(c => c.id === id);
       let newLogs = s.writingLogs || [];
@@ -829,6 +863,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const replaceChaptersForBook = (bookId: string, parsedChapters: { id: string | null; title: string; content: string }[]) => {
+    const preparedChapters = parsedChapters.map(chapter => ({
+      ...chapter,
+      id: chapter.id || generateId(),
+    }));
+    preparedChapters.forEach(chapter => markChapterContentDirty(chapter.id));
+
     setState((s) => {
       const existingChapters = s.chapters.filter(c => c.bookId === bookId);
       const otherChapters = s.chapters.filter(c => c.bookId !== bookId);
@@ -837,8 +877,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       let order = 1;
       let totalLengthDiff = 0;
 
-      parsedChapters.forEach(pc => {
-        const existing = pc.id ? existingChapters.find(c => c.id === pc.id) : null;
+      preparedChapters.forEach(pc => {
+        const existing = existingChapters.find(c => c.id === pc.id);
         if (existing) {
           totalLengthDiff += (pc.content.length - existing.content.length);
           newChapters.push({
@@ -850,7 +890,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } else {
           totalLengthDiff += pc.content.length;
           newChapters.push({
-            id: generateId(),
+            id: pc.id,
             bookId,
             title: pc.title,
             content: pc.content,
@@ -1415,6 +1455,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     if (chapterIndex === undefined) {
+      markBookContentDirty(meta.bookId);
+      payload.chapters.forEach(chapter => markChapterContentDirty(chapter.id));
       setState((s) => mergeRecoveredBook(s, payload));
       return;
     }
@@ -1423,6 +1465,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const recoveredChapters = [...payload.chapters].sort((a, b) => a.order - b.order);
     const recovered = recoveredCanvas[chapterIndex] || recoveredChapters[chapterIndex];
     if (!recovered) throw new Error('Глава в этой версии не найдена');
+    const currentChapter = stateRef.current.chapters
+      .filter(item => item.bookId === meta.bookId)
+      .sort((a, b) => a.order - b.order)[chapterIndex];
+    const restoredChapterId = currentChapter?.id || generateId();
+    markBookContentDirty(meta.bookId);
+    markChapterContentDirty(restoredChapterId);
 
     setState((s) => {
       const book = s.books.find(item => item.id === meta.bookId);
@@ -1436,7 +1484,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const nextChapter: Chapter = target
         ? { ...target, title: recovered.title, content: recovered.content }
         : {
-            id: generateId(),
+            id: restoredChapterId,
             bookId: meta.bookId,
             title: recovered.title,
             content: recovered.content,
@@ -1474,6 +1522,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const meta = (stateRef.current.trashItems || []).find(item => item.id === trashId);
     if (!meta) throw new Error('Объект в корзине не найден');
     const payload = await loadRecoveryPayload<TrashPayload>('trash', meta.id, meta.chunkCount);
+    if (payload.type === 'book') {
+      markBookContentDirty(payload.data.book.id);
+      payload.data.chapters.forEach(chapter => markChapterContentDirty(chapter.id));
+    } else if (payload.type === 'chapter') {
+      markChapterContentDirty(payload.data.id);
+    }
     setState((s) => {
       if (payload.type === 'book') return mergeRecoveredBook(s, payload.data);
       if (payload.type === 'chapter') {
@@ -1547,6 +1601,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...previousVersions.filter(item => !restoredVersionIds.has(item.id)).map(item => deleteRecoveryPayload('bookVersions', item.id, item.chunkCount)),
       ...previousTrash.filter(item => !restoredTrashIds.has(item.id)).map(item => deleteRecoveryPayload('trash', item.id, item.chunkCount)),
     ]);
+    backup.state.books.forEach(book => markBookContentDirty(book.id));
+    backup.state.chapters.forEach(chapter => markChapterContentDirty(chapter.id));
     setState({
       ...initialState,
       ...backup.state,
